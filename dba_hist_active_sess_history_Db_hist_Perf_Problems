@@ -1,0 +1,455 @@
+http://feed.askmaclean.com/archives/dba_hist_active_sess_history.html
+http://www.cnblogs.com/jyzhao/p/8628184.html
+
+How to Analyze Database Historical Performance Problems by dba_hist_active_sess_history
+
+
+Background
+
+In many cases, when database performance problems occur, we do not have the opportunity to collect enough diagnostic information, such as system state dump or hang analyze, and even when the problem occurs, the DBA is not present at all. This brings us great difficulties in diagnosing the problem. Under such circumstances, can we collect some information afterwards to analyze the cause of the problem? On Oracle 10G or later, the answer is yes. In this article we will introduce a way to analyze the problem through the dba_hist_active_sess_history data.
+
+Applies to
+
+Oracle 10G or later, this article applies to any platform.
+
+Details
+
+In Oracle 10G, we introduced the AWR and ASH sampling mechanisms. One view gv$active_session_history will sample the active sessions of all nodes of the database once per second, while dba_hist_active_sess_history will sample the data in gv$active_session_history every 10 seconds. Once and persisted. Based on this feature, we can analyze the dba_hist_active_sess_history Session sampling situation to locate the exact time range of the problem and observe the top event and top holder of each sample point. Here is an example to explain in detail.
+
+1. Dump the ASH data during the problem:
+
+In order not to affect the production system, we can export the ASH data of the problem during the analysis on the test machine. 
+
+Create a new table m_ash based on dba_hist_active_sess_history and import it to the test machine via exp/imp. Execute exp: 
+
+SQL> conn user/passwd 
+
+SQL> create table m_ash as select * from dba_hist_active_sess_history where SAMPLE_TIME between TO_TIMESTAMP ('<time_begin>', 'YYYY-MM-DD HH24:MI:SS') and TO_TIMESTAMP ('<time_end>', 'YYYY-MM-DD HH24:MI:SS');
+
+$ exp user/passwd file=m_ash.dmp tables=(m_ash) log=m_ash.exp.log
+
+Then import into the test machine: 
+
+$ imp user/passwd file=m_ash.dmp log=m_ash.imp.log
+
+2. Verify the exported ASH time range:
+
+In order to speed up, we used a parallel query. It is also recommended to use Oracle SQL Developer to query to prevent the output of the results of the line is not easy to observe.
+
+set line 200 pages 1000
+
+col sample_time for a25
+
+col event for a40
+
+alter session set nls_timestamp_format='yyyy-mm-dd hh24:mi:ss.ff';
+
+select /*+ parallel 8 */
+
+ t.dbid, t.instance_number, min(sample_time), max(sample_time), count(*) session_count
+
+  from m_ash t
+
+ group by t.dbid, t.instance_number
+
+ order by dbid, instance_number;
+
+INSTANCE_NUMBER    MIN(SAMPLE_TIME)    MAX(SAMPLE_TIME)    SESSION_COUNT
+
+1    2015-03-26 21:00:04.278    2015-03-26 22:59:48.387    2171
+
+2    2015-03-26 21:02:12.047    2015-03-26 22:59:42.584    36
+
+From the above output, it can be seen that the database has a total of 2 nodes and the sampling time is 2 hours. The sampling of node 1 is much larger than that of node 2, and the problem may occur on node 1.
+
+3. Confirm the precise time range of the problem:
+
+Refer to the following script:
+
+select /*+ parallel 8 */
+
+ dbid, instance_number, sample_id, sample_time, count(*) session_count
+
+  from m_ash t
+
+ group by dbid, instance_number, sample_id, sample_time
+
+ order by dbid, instance_number, sample_time;
+
+INSTANCE_NUMBER    SAMPLE_ID    SAMPLE_TIME    SESSION_COUNT
+
+1    36402900    2015-03-26 22:02:50.985    4
+
+1    36402910    2015-03-26 22:03:01.095    1
+
+1    36402920    2015-03-26 22:03:11.195    1
+
+1    36402930    2015-03-26 22:03:21.966    21
+
+1    36402940    2015-03-26 22:03:32.116    102
+
+1    36402950    2015-03-26 22:03:42.226    181
+
+1    36402960    2015-03-26 22:03:52.326    200
+
+1    36402970    2015-03-26 22:04:02.446    227
+
+1    36402980    2015-03-26 22:04:12.566    242
+
+1    36402990    2015-03-26 22:04:22.666    259
+
+1    36403000    2015-03-26 22:04:32.846    289
+
+1    36403010    2015-03-26 22:04:42.966    147
+
+1    36403020    2015-03-26 22:04:53.076    2
+
+1 36403030 2015-03-26 22: 05: 03.186 4 
+
+1 36403040 2015-03-26 22: 05: 13.296 1 
+
+1 36403050 2015-03-26 22: 05: 23.398 1
+
+Observe the number of active sessions per sampling point for the above output, and the sudden increase in the number often means that the problem has occurred. From the above output, it can be determined that the exact time of the problem occurred at 2015-03-26 22:03:21 ~ 22:04:42, and the problem lasted for about 1.5 minutes. 
+
+Note: Observe whether there is a break in the output above, such as no sampling at certain times.
+
+4. Determine the top n event for each sample point:
+
+Here we specify top 2 event and note the sample time to observe all samples. If the amount of data is large, you can also observe the situation in a certain period of time by opening the comment of sample_time. Note that the last column, session_count, refers to the number of sessions waiting for this event at that sample point.
+
+select t.dbid,
+
+       t.sample_id,
+
+       t.sample_time,
+
+       t.instance_number,
+
+       t.event,
+
+       t.session_state,
+
+       t.c session_count
+
+  from (select t.*,
+
+               rank() over(partition by dbid, instance_number, sample_time order by c desc) r
+
+          from (select /*+ parallel 8 */
+
+                 t.*,
+
+                 count(*) over(partition by dbid, instance_number, sample_time, event) c,
+
+                 row_number() over(partition by dbid, instance_number, sample_time, event order by 1) r1
+
+                  from m_ash t
+
+                /*where sample_time >
+
+                    to_timestamp('2013-11-17 13:59:00',
+
+                                 'yyyy-mm-dd hh24:mi:ss')
+
+                and sample_time <
+
+                    to_timestamp('2013-11-17 14:10:00',
+
+                                 'yyyy-mm-dd hh24:mi:ss')*/
+
+                ) t
+
+         where r1 = 1) t
+
+ where r < 3
+
+ order by dbid, instance_number, sample_time, r;
+
+SAMPLE_ID    SAMPLE_TIME    INSTANCE_NUMBER    EVENT    SESSION_STATE    SESSION_COUNT
+
+36402900    22:02:50.985    1        ON CPU    3
+
+36402900    22:02:50.985    1    db file sequential read    WAITING    1
+
+36402910    22:03:01.095    1        ON CPU    1
+
+36402920    22:03:11.195    1    db file parallel read    WAITING    1
+
+36402930    22:03:21.966    1    cursor: pin S wait on X    WAITING    11
+
+36402930    22:03:21.966    1    latch: shared pool    WAITING    4
+
+36402940    22:03:32.116    1    cursor: pin S wait on X    WAITING    83
+
+36402940    22:03:32.116    1    SGA: allocation forcing component growth    WAITING    16
+
+36402950    22:03:42.226    1    cursor: pin S wait on X    WAITING    161
+
+36402950    22:03:42.226    1    SGA: allocation forcing component growth    WAITING    17
+
+36402960    22:03:52.326    1    cursor: pin S wait on X    WAITING    177
+
+36402960    22:03:52.326    1    SGA: allocation forcing component growth    WAITING    20
+
+36402970    22:04:02.446    1    cursor: pin S wait on X    WAITING    204
+
+36402970    22:04:02.446    1    SGA: allocation forcing component growth    WAITING    20
+
+36402980    22:04:12.566    1    cursor: pin S wait on X    WAITING    219
+
+36402980    22:04:12.566    1    SGA: allocation forcing component growth    WAITING    20
+
+36402990    22:04:22.666    1    cursor: pin S wait on X    WAITING    236
+
+36402990    22:04:22.666    1    SGA: allocation forcing component growth    WAITING    20
+
+36403000    22:04:32.846    1    cursor: pin S wait on X    WAITING    265
+
+36403000    22:04:32.846    1    SGA: allocation forcing component growth    WAITING    20
+
+36403010    22:04:42.966    1    enq: US - contention    WAITING    69
+
+36403010    22:04:42.966    1    latch: row cache objects    WAITING    56
+
+36403020    22:04:53.076    1    db file scattered read    WAITING    1
+
+36403020    22:04:53.076    1    db file sequential read    WAITING    1
+
+From the above output, we can find that the most serious wait during the problem is the cursor: pin S wait on X, the peak number of sessions waiting for the event reached 265, followed by the SGA: allocation forcing component growth, the peak session is 20.
+
+Note: 
+
+1) Reconfirm whether the above output has a break, and if there is no sampling for some time. 
+
+2) Note that those session_state is the output of the ON CPU. Compare the number of ON CPU processes with the number of your OS physical CPUs. If you are close to or exceed the number of physical CPUs, you need to check the CPU resource status of the OS at that time. Tools such as OSWatcher/NMON, high CPU Run Queue may cause this problem, and of course it may be the result of the problem. It needs to be combined with the time sequence of OSWatcher and ASH to verify.
+
+5. Observe the wait chain for each sample point:
+
+The principle is to find the final holder by the connect by cascading query through the holder of the dba_hist_active_sess_history. blocking_session record. In the RAC environment, the ASH sampling time of each node is very often The following is not consistent, so you can make a comparison of the sample time of different nodes by 1 second by slightly modifying the sample_time of the second paragraph of this SQL (note that it is also best to modify the sample_time in the partition by correspondingly). The output isleaf=1 is the final holder, and iscycle=1 represents a deadlock (that is, in the same sampling point a, etc. b, b, etc., c, and c, etc., if this continues to happen , then it is particularly worth paying attention to). Blocking chains can be observed using the following query.
+
+select /*+ parallel 8 */
+
+ level                     lv,
+
+ connect_by_isleaf         isleaf,
+
+ connect_by_iscycle        iscycle,
+
+ t.dbid,
+
+ t.sample_id,
+
+ t.sample_time,
+
+ t.instance_number,
+
+ t.session_id,
+
+ t.sql_id,
+
+ t.session_type,
+
+ t.event,
+
+ t.session_state,
+
+ t.blocking_inst_id,
+
+ t.blocking_session,
+
+ t.blocking_session_status
+
+  from m_ash t
+
+/*where sample_time >
+
+    to_timestamp('2013-11-17 13:55:00',
+
+                 'yyyy-mm-dd hh24:mi:ss')
+
+and sample_time <
+
+    to_timestamp('2013-11-17 14:10:00',
+
+                 'yyyy-mm-dd hh24:mi:ss')*/
+
+ start with blocking_session is not null
+
+connect by nocycle
+
+ prior dbid = dbid
+
+       and prior sample_time = sample_time
+
+          /*and ((prior sample_time) - sample_time between interval '-1'
+
+          second and interval '1' second)*/
+
+       and prior blocking_inst_id = instance_number
+
+       and prior blocking_session = session_id
+
+       and prior blocking_session_serial# = session_serial#
+
+ order siblings by dbid, sample_time;
+
+LV    ISLEAF    ISCYCLE    SAMPLE_TIME    INSTANCE_NUMBER    SESSION_ID    SQL_ID    EVENT    SESSION_STATE    BLOCKING_INST_ID    BLOCKING_SESSION    BLOCKING_SESSION_STATUS
+
+1    0    0    22:04:32.846    1    1259    3ajt2htrmb83y    cursor:    WAITING    1    537    VALID
+
+2    1    0    22:04:32.846    1    537    3ajt2htrmb83y    SGA:    WAITING            UNKNOWN
+
+Note that for the output to be easy to read, we will wait for the event to be abbreviated. From the above output, we can see that at the same sampling point (22:04:32.846), node 1 session 1259 is waiting for cursor: pin S wait on X, it is blocked by node 1 session 537, and node 1 session 537 is waiting again. SGA: allocation forcing component growth, and ASH does not capture its holder, so here cursor: pin S wait on X is just a superficial phenomenon, the cause of the problem lies in SGA: allocation forcing component growth
+
+6. Based on the principle of step 5 to find out the final top holder of each sample point: For
+
+example, the following SQL lists the blocker session of each sampling point top 2 and calculates the number of sessions that it ends up blocking (refer to blocking_session_count).
+
+select t.lv,
+
+       t.iscycle,
+
+       t.dbid,
+
+       t.sample_id,
+
+       t.sample_time,
+
+       t.instance_number,
+
+       t.session_id,
+
+       t.sql_id,
+
+       t.session_type,
+
+       t.event,
+
+       t.seq#,
+
+       t.session_state,
+
+       t.blocking_inst_id,
+
+       t.blocking_session,
+
+       t.blocking_session_status,
+
+       t.c blocking_session_count
+
+  from (select t.*,
+
+               row_number() over(partition by dbid, instance_number, sample_time order by c desc) r
+
+          from (select t.*,
+
+                       count(*) over(partition by dbid, instance_number, sample_time, session_id) c,
+
+                       row_number() over(partition by dbid, instance_number, sample_time, session_id order by 1) r1
+
+                  from (select /*+ parallel 8 */
+
+                         level              lv,
+
+                         connect_by_isleaf  isleaf,
+
+                         connect_by_iscycle iscycle,
+
+                         t.*
+
+                          from m_ash t
+
+                        /*where sample_time >
+
+                            to_timestamp('2013-11-17 13:55:00',
+
+                                         'yyyy-mm-dd hh24:mi:ss')
+
+                        and sample_time <
+
+                            to_timestamp('2013-11-17 14:10:00',
+
+                                         'yyyy-mm-dd hh24:mi:ss')*/
+
+                         start with blocking_session is not null
+
+                        connect by nocycle
+
+                         prior dbid = dbid
+
+                               and prior sample_time = sample_time
+
+                                  /*and ((prior sample_time) - sample_time between interval '-1'
+
+                                  second and interval '1' second)*/
+
+                               and prior blocking_inst_id = instance_number
+
+                               and prior blocking_session = session_id
+
+                               and prior
+
+                                    blocking_session_serial# = session_serial#) t
+
+                 where t.isleaf = 1) t
+
+         where r1 = 1) t
+
+ where r < 3
+
+ order by dbid, sample_time, r;
+
+SAMPLE_TIME    INSTANCE_NUMBER    SESSION_ID    SQL_ID    EVENT    SEQ#    SESSION_STATE    BLOCKING_SESSION_STATUS    BLOCKING_SESSION_COUNT
+
+22:03:32.116    1    1136    1p4vyw2jan43d    SGA:    1140    WAITING    UNKNOWN    82
+
+22:03:32.116    1    413    9g51p4bt1n7kz    SGA:    7646    WAITING    UNKNOWN    2
+
+22:03:42.226    1    1136    1p4vyw2jan43d    SGA:    1645    WAITING    UNKNOWN    154
+
+22:03:42.226    1    537    3ajt2htrmb83y    SGA:    48412    WAITING    UNKNOWN    4
+
+22:03:52.326    1    1136    1p4vyw2jan43d    SGA:    2150    WAITING    UNKNOWN    165
+
+22:03:52.326    1    537    3ajt2htrmb83y    SGA:    48917    WAITING    UNKNOWN    8
+
+22:04:02.446    1    1136    1p4vyw2jan43d    SGA:    2656    WAITING    UNKNOWN    184
+
+22:04:02.446    1    537    3ajt2htrmb83y    SGA:    49423    WAITING    UNKNOWN    10
+
+22:04:12.566    1    1136    1p4vyw2jan43d    SGA:    3162    WAITING    UNKNOWN    187
+
+22:04:12.566    1    2472        SGA:    1421    WAITING    UNKNOWN    15
+
+22:04:22.666    1    1136    1p4vyw2jan43d    SGA:    3667    WAITING    UNKNOWN    193
+
+22:04:22.666    1    2472        SGA:    1926    WAITING    UNKNOWN    25
+
+22:04:32.846    1    1136    1p4vyw2jan43d    SGA:    4176    WAITING    UNKNOWN    196
+
+22:04:32.846    1    2472        SGA:    2434    WAITING    UNKNOWN    48
+
+Note that the above output, such as the first line, represents that at 22:03:32.116, session 1136 of node 1 eventually blocked 82 sessions. Looking down the time, it can be seen that session 1136 of node 1 is the most serious holder during the problem. It blocks more than 100 sessions at each sample point, and it continues to wait for the SGA: allocation forcing component growth, observe its seq# you will find that the seq# of the event is constantly changing, indicating that the session is not completely live. Since the time happens to be around 22:00 at night, this is obviously due to shared memory resize due to the automatic collection of job information. Therefore, the problem can be determined by combining the scheduler/MMAN trace with the output of dba_hist_memory_resize_ops.
+
+Note: 
+
+1) blocking_session_count refers to the number of sessions that a holder eventually blocks, such as a <- b <- c (a is blocked by b, b is blocked by c), and only c is evaluated for blocking a session because the intermediate b may be Duplication occurs in different blocking chains. 
+
+2) If the final holder is not sampled by ash (usually because the holder is idle), such as a<– c and b<– c (a blocked by c, and b blocked by c), but c is not sampled, then the above The script cannot count c to the final holder. This may cause some omissions. 
+
+3) Note that the number of blocking_session_count is compared with the total number of session_count for each sample point in the third query. If the number of blocking_session_count at each sampling point is much less than the total number of session_count, it indicates that most of the sessions do not record the holder, so the query The results do not represent anything. 
+
+4) In Oracle 10g, ASH does not have a blocking_inst_id column. In all of the above scripts, you only need to remove the column. Therefore, 10g ASH can only be used to diagnose single-node problems.
+
+Other applications of ASH
+
+In addition to
+
+finding holdersthrough ASH data, we can also use it to obtain a lot of information (based on the database version is different): Forexample, calculate the maximum PGA for each sampling point through the PGA_ALLOCATED column, total PGA to analyze Ora-4030/Memory Swap related issues;
+
+analysis of temporary table space usage
+
+through TEMP_SPACE_ALLOCATED columns; analysis of SQL in parse or execution phase via IN_PARSE/IN_HARD_PARSE/IN_SQL_EXECUTION columns;
+
+I/O determination via CURRENT_OBJ#/CURRENT_FILE#/CURRENT_BLOCK# Related objects waiting to happen.
