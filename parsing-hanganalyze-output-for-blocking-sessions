@@ -1,0 +1,113 @@
+--http://appcrawler.com/wordpress/2010/07/17/parsing-hanganalyze-output-for-blocking-sessions/
+--sqlplus / AS sysbda
+--oradebug setmypid
+--oradebug –g ALL hanganalyze 3
+--oradebug tracefile_name
+--exit
+
+#!/home/oracle/local/bin/python
+ 
+import re, string, fileinput, sys
+ 
+before = []
+ 
+#------------------------------------------------------------------------------------
+ 
+class blocker:
+  def __init__(self, value):
+    self.blockedIds = []
+    self.blockerId = value
+  def addBlocked(self,value):
+    self.blockedIds.append(value)
+  def getBlockerId(self):
+    return self.blockerId
+ 
+#------------------------------------------------------------------------------------
+ 
+def parseFile(f, a):
+  START_STATS=False
+  FOUND_STATS=False
+  for line in fileinput.input(f):
+    if START_STATS == False:
+      if re.match('^State of nodes', line):
+        START_STATS = True
+    elif FOUND_STATS == False:
+      if re.match('^[[0-9]', line):
+        FOUND_STATS = True
+        a.append(line)
+    elif FOUND_STATS == True:
+      if re.match('^session', line):
+        break
+      else:
+        a.append(line)
+  fileinput.close()
+ 
+#------------------------------------------------------------------------------------
+ 
+parseFile(sys.argv[1], before)
+ 
+blockers = []
+arr = -1
+found = False
+HANG = False
+for e in before:
+  found = False
+  j = 0
+  BLOCKED=string.split(e,"/")[0]
+  INST=int(string.split(e,"/")[1]) + 1
+  SID=string.split(e,"/")[2]
+  SERIAL=string.split(e,"/")[3]
+  OSPID=string.split(e,"/")[5]
+  STATE=string.split(e,"/")[6]
+  BLOCKER=string.split(e,"/")[9]
+  if string.find(STATE,"HANG") > -1:
+    HANG = True
+  if string.find(BLOCKER,"[") != -1:
+    for i in range(len(blockers)):
+      if blockers[i].getBlockerId() == BLOCKER:
+        arr = i
+        found = True
+        break
+      else:
+        found = False
+    if found != True:
+      arr = arr + 1
+      a = blocker(BLOCKER)
+      a.addBlocked("SID = " + str(SID) + " SERIAL# = " + str(SERIAL) + " on INST " + str(INST) + " (OSPID = " + str(OSPID) + ")")
+      blockers.append(a)
+    else:
+      a = blockers[arr]
+      a.addBlocked("SID = " + str(SID) + " SERIAL# = " + str(SERIAL) + " on INST " + str(INST) + " (OSPID = " + str(OSPID) + ")")
+ 
+if HANG == True:
+  print "------------------------------------------------------------------------"
+  print "\n\nW A R N I N G ! ! !  Possible True hang found\n\n"
+  print "Search for the case sensitive word HANG in " + sys.argv[1] + "\n\n"
+ 
+ 
+print "------------------------------------------------------------------------"
+print "BLOCKING SESSION ANALYSIS:"
+print "------------------------------------------------------------------------"
+ 
+for e3 in blockers:
+  for e in before:
+    BLOCKED=string.split(e,"/")[0]
+    if BLOCKED == e3.blockerId:
+      INST=int(string.split(e,"/")[1]) + 1
+      SID=string.split(e,"/")[2]
+      SERIAL=string.split(e,"/")[3]
+      OSPID=string.split(e,"/")[5]  
+      BLOCKER=string.split(e,"/")[9]
+      if string.find(BLOCKER,"[") != -1:
+        ALSO_BLOCKED = True
+      else:
+        ALSO_BLOCKED = False
+      break
+  print "------------------------------------------------------------------------"
+  if ALSO_BLOCKED:
+    print "SID = " + str(SID) + " SERIAL# = " + str(SERIAL) + " on INST " + str(INST) + " (OSPID = " + str(OSPID) + ") - Also blocked"
+  else:
+    print "SID = " + str(SID) + " SERIAL# = " + str(SERIAL) + " on INST " + str(INST) + " (OSPID = " + str(OSPID) + ")"
+  print "...is blocking..."
+  for e4 in e3.blockedIds:
+    print "\t" + e4
