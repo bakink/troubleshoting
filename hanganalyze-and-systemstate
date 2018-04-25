@@ -1,0 +1,9 @@
+--https://blog.dbi-services.com/oracle-is-hanging-dont-forget-hanganalyze-and-systemstate/
+sqlplus / as sysdba
+oradebug setmypid;
+oradebug unlimit;
+--oradebug hanganalyze 3;
+oradebug pdump interval=60 ndumps=3 hanganalyze 3;
+oradebug dump ashdumpseconds 30;
+oradebug dump systemstate 266;
+oradebug tracefile_name;
