@@ -1,0 +1,80 @@
+
+select *
+  from (select x.FORCE_MATCHING_SIGNATURE,
+               x.sql_id,
+               x.SQL_TEXT,
+               --x.inst_id,
+               x.module,
+               x.parsing_schema_name,
+               x.SHARABLE_MEM,
+               x.EXECUTIONS,
+               --x.sira,
+               x.plsql_procedure
+          from 
+               (select a.FORCE_MATCHING_SIGNATURE,
+                       a.sql_id,
+                       a.SQL_TEXT,
+                       a.inst_id,
+                       a.module,
+                       a.parsing_schema_name,
+                       a.SHARABLE_MEM,
+                       a.EXECUTIONS,
+                       --a.KEPT_VERSIONS,
+                       --round(a.buffer_gets / decode(a.executions, 0, 1, a.executions)) buffer_per_Exec,
+                       row_number() over(partition by a.sql_id order by a.program_id desc, a.program_line#) sira,
+                       decode(a.program_id,
+                              0,
+                              null,
+                              b.owner || '.' || b.object_name || '(' ||
+                              a.program_line# || ')') plsql_procedure
+                  from gv$sqlarea a, dba_objects b
+                 where a.program_id = b.object_id
+                   and a.MODULE is not null
+                   and a.PARSING_SCHEMA_ID not like '%SYS%'
+                   and a.PARSING_SCHEMA_NAME <> 'SYS'
+                   and a.FORCE_MATCHING_SIGNATURE <> 0
+                   and a.MODULE not in
+                       ('OEM', 'Data Pump Worker', 'Admin Connection')) x
+         where x.sira = 1
+           and exists
+         (select 1
+                  from gv$sqlarea ga
+                 where ga.FORCE_MATCHING_SIGNATURE = x.FORCE_MATCHING_SIGNATURE
+                   and ga.sql_id <> x.sql_id)
+           and x.force_matching_signature in
+              
+               (select x.FORCE_MATCHING_SIGNATURE
+                  from 
+                       (select a.FORCE_MATCHING_SIGNATURE,
+                               a.sql_id,
+                               a.SQL_TEXT,
+                               a.inst_id,
+                               a.module,
+                               a.parsing_schema_name,
+                               a.SHARABLE_MEM,
+                               a.EXECUTIONS,
+                               --a.KEPT_VERSIONS,
+                               --round(a.buffer_gets / decode(a.executions, 0, 1, a.executions)) buffer_per_Exec,
+                               row_number() over(partition by a.sql_id order by a.program_id desc, a.program_line#) sira,
+                               decode(a.program_id,
+                                      0,
+                                      null,
+                                      b.owner || '.' || b.object_name || '(' ||
+                                      a.program_line# || ')') plsql_procedure
+                          from gv$sqlarea a, dba_objects b
+                         where a.program_id = b.object_id
+                           and a.MODULE is not null
+                           and a.PARSING_SCHEMA_ID not like '%SYS%'
+                           and a.PARSING_SCHEMA_NAME <> 'SYS'
+                           and a.FORCE_MATCHING_SIGNATURE <> 0
+                           and a.MODULE not in
+                               ('OEM', 'Data Pump Worker', 'Admin Connection')) x
+                 where x.sira = 1
+                   and exists (select 1
+                          from gv$sqlarea ga
+                         where ga.FORCE_MATCHING_SIGNATURE = x.FORCE_MATCHING_SIGNATURE
+                           and ga.sql_id <> x.sql_id)
+                 group by x.FORCE_MATCHING_SIGNATURE
+                having(count(x.sql_id)) > 1)
+         order by x.FORCE_MATCHING_SIGNATURE)
+where rownum < 3000;
