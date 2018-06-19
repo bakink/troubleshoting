@@ -78,3 +78,12 @@ select *
                 having(count(x.sql_id)) > 1)
          order by x.FORCE_MATCHING_SIGNATURE)
 where rownum < 3000;
+
+----
+
+select to_char(force_matching_signature), count(*) 
+     from gv$sqlstats 
+     where force_matching_signature > 0 
+     group by force_matching_signature 
+     having count(*) > 10 
+     order by 2 desc; 
