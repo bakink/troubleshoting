@@ -1,0 +1,1048 @@
+--http://tech.e2sn.com/oracle/troubleshooting/oradebug-doc
+
+
+racle made big improvements to its diagnosability infrastructure in database version 11g. Every major kernel function and component has been instrumented with the new dbk*/dbg* debug functions and can be traced with ORADEBUG.
+
+Before 11g, the previous Oracle diagnostic events infrastructure had much more limited syntax and usage.
+
+Very shortly, the new 11g kernel debug & diagnostics infrastructure allows you to be much more precise when tracing & dumping diagnostic info. For example, the below example would dump SQL Trace only when running the SQL with SQLID 32cqz71gd8wy3 below and the pgadep 0 means that only trace when the SQL is executed from top level (directly by application) as opposed to from recursive context (like SQL fired from PL/SQL or data dictionary queries where dep>0 in SQL trace):
+
+SQL> alter session set events 'sql_trace[SQL: 32cqz71gd8wy3] {pgadep: exactdepth 0} plan_stat=all_executions,wait=true,bind=true';
+
+Session altered.
+
+The plan_stat=all executions above is yet another 11g improvement, which dumps the STAT# lines (execution plan & execution statistics from last execution) at every execution of the cursor as opposed to only when the cursor is closed.
+
+For low-level diagnostics, you can even enable tracing/actions only when the current function call stack contains a specific function name (or prefix), like in below case I only trace things happening in the execute phase of the SQL (opiexe stands for Oracle Program Interface Execute):
+
+SQL> alter session set events 'sql_trace[SQL: 32cqz71gd8wy3] {pgadep: exactdepth 0} {callstack: fname opiexe} plan_stat=all_executions,wait=true,bind=true';
+
+Session altered.
+
+
+
+Another example enables kernel tracing (not SQL trace) for all Oracle components which are part of the RDBMS.SQL_Transform component family. The tracing is only done when the SQL statement executed has SQLID 32cqz71gd8wy3. I have enabled tracing to a tracefile (if the components have anything to trace) and additionally I have enabled three additional actions every time any events in SQL_Transform are hit and the SQLID scope is met. 
+
+Note that this syntax is experimental here, it's not widely used and this particular case below probably dumps a lot of detailed info, which is not useful for everyday regular troubleshooting tasks. I wrote such syntax for illustrating the full power of the new debug infrastructure:
+
+SQL> alter session set events 'trace[RDBMS.SQL_Transform] [SQL: 32cqz71gd8wy3] disk=high RDBMS.query_block_dump(1) processstate(1) callstack(1)';
+
+Session altered.
+
+Now the optimizer SQL Transformation engine tracing would happen only when executing the SQLID mentioned above and additionally three dumps (query_block_dump,processstate and current call stack) are performed every time this SQLID execution hits events in the SQL_Transform module.
+
+Here's the full syntax of what you can use starting from 11g onwards, you can extract all this yourself by using the new command ORADEBUG DOC:
+
+Contents
+
+1 ORADEBUG DOC
+2 ORADEBUG DOC EVENT
+3 ORADEBUG DOC EVENT NAME
+4 ORADEBUG DOC EVENT NAME <event_name>
+5 ORADEBUG DOC EVENT SCOPE
+6 ORADEBUG DOC EVENT SCOPE SQL
+7 ORADEBUG DOC EVENT FILTER
+8 ORADEBUG DOC EVENT ACTION
+9 ORADEBUG DOC COMPONENT
+
+
+There's a new command ORADEBUG DOC for showing all the new syntax that oradebug supports:
+
+ORADEBUG DOC
+
+SQL> ORADEBUG DOC
+
+Internal Documentation
+**********************
+
+  EVENT                           Help on events (syntax, event list, ...)
+  COMPONENT       [<comp_name>]   List all components or describe <comp_name>
+
+
+ORADEBUG DOC EVENT
+The syntax immediately below shows that it's possible to assign actions (action_list) to events (functions, code locations in Oracle) and make these actions fire only in specific conditions (when event scope (SQL_ID) and filter conditions are matched).
+
+SQL> ORADEBUG DOC EVENT
+
+Event Help:
+***********
+
+  Formal Event Syntax
+  --------------------
+    <event_spec>   ::= '<event_id> [<event_scope>]
+                                   [<event_filter_list>]
+                                   [<event_parameters>]
+                                   [<action_list>]
+                                   [off]'
+
+    <event_id>     ::= <event_name | number>[<target_parameters>]
+
+    <event_scope>  ::= [<scope_name>: scope_parameters]
+
+    <event_filter> ::= {<filter_name>: filter_parameters}
+
+    <action>       ::= <action_name>(action_parameters)
+
+    <*_parameters> ::= <parameter_name> = <value>[, ]
+
+
+  Some Examples
+  -------------
+    * Set event 10235 level 1:
+      alter session set events '10235';
+
+    * Set events SQL_TRACE (a.k.a. 10046) level 1:
+      alter session set events 'sql_trace';
+
+    * Turn off event SQL_TRACE:
+      alter session set events 'sql_trace off';
+
+    * Set events SQL_TRACE with parameter <plan_stat> set to 'never'
+      and parameter <wait> set to 'true':
+      alter session set events 'sql_trace wait=true, plan_stat=never';
+
+    * Trace in-memory the SQL_MONITOR component (the target) and all its
+      sub-components at level high. Get high resolution time for each
+      trace:
+      alter session set events 'trace[sql_mon.*] memory=high,
+                                                 get_time=highres';
+
+    * On-disk trace PX servers p000 and p005 for components 'sql_mon'
+      and 'sql_optimizer' (including sub-components) at level highest:
+      alter system set events 'trace[sql_mon | sql_optimizer.*]
+                                    {process: pname = p000 | p005}';
+
+    * Same as above but only when SQL id '7ujay4u33g337' is executed:
+      alter system set events 'trace[sql_mon | sql_optimizer.*]
+                                    [sql: 7ujay4u33g337]
+                                    {process: pname = p000 | p005}';
+
+    * Execute an action immediatly by using 'immediate' for the event
+      name:
+      alter session set events 'immediate eventdump(system)'
+
+    * Create an incident labeled 'table_missing' when external error
+      942 is signaled by process id 14534:
+      alter session set events '942 {process: 14534}
+                                    incident(table_missing)';
+
+
+  Notes
+  -----
+    * Implicit parameter level is 1 by default
+      e.g. '10053' is same as '10053 level 1'
+
+    * Event target (see [<target_parameters>] construct) is only
+      supported by specific events like the TRACE[] event
+
+    * <event_scope> and/or <event_filter> are constructs
+      that can be used for any event
+
+    * Same event can be set simultaneously for a different scope or
+      target but not for different filters.
+
+    * '|' character can be used to select multiple targets, scope or
+      filters.
+
+      E.g. 'sql_trace [sql: sql_id=g3yc1js3g2689 | sql_id=7ujay4u33g337]'
+
+    * '=' sign is optional in <*_parameters>
+
+      E.g. 'sql_trace level 12';
+
+    * Like PL/SQL, no need to specify the parameter name for target,
+      scope, filters and action. Resolution is done by position in
+      that case:
+
+      E.g. 'sql_trace [sql: g3yc1js3g2689 | 7ujay4u33g337]'
+
+
+  Help sub-topics
+  ---------------
+
+    NAME    [<event_name>]      List all events or describe <event_name>
+    SCOPE   [<scope_name>]      List all scopes or describe <scope_name>
+    FILTER  [<filter_name>]     List all filters or describe <filter_name>
+    ACTION  [<action_name>]     List all actions or describe <action_name>
+
+
+
+ORADEBUG DOC EVENT NAME
+
+SQL> ORADEBUG DOC EVENT NAME
+
+Events in library DIAG:
+------------------------------
+trace[]              Main event to control UTS tracing
+disable_dde_action[] Event used by DDE to disable actions
+ams_trace[]          Event to dump ams performance trace records
+ams_rowsrc_trace[]   Event to dump ams row source tracing
+sweep_verification   Event to enable sweep file verification
+enable_xml_inc_staging Event to enable xml incident staging format
+
+Events in library RDBMS:
+------------------------------
+alert_text           event for textual alerts
+trace_recursive      event to force tracing recursive SQL statements
+clientid_overwrite   event to overwrite client_identifier when client_info is set
+sql_monitor          event to force monitoring SQL statements
+eventsync_tac        Event posted from events syncing tac
+sql_trace            event for sql trace
+pmon_startup         startup of pmon process
+background_startup   startup of background processes
+db_open_begin        start of db open operation
+
+Events in library GENERIC:
+------------------------------
+kg_event[]           Support old error number events (use err# for short)
+
+Events in library CLIENT:
+------------------------------
+oci_trace            event for oci trace
+
+Events in library LIBCELL:
+------------------------------
+libcell_stat         libcell statistics level specification
+cellclnt_skgxp_trc_ops Controls to trace SKGXP operations
+cellclnt_high_lat_ops Control to trace High-latency I/O operations
+
+Events in library ADVCMP:
+------------------------------
+arch_comp_level[]    arch_comp_level[<ulevel, 1-7>]
+ccmp_debug           columnar compression debug event
+ccmp_align           columnar compression enable alignment
+ccmp_countstar       columnar compression enable count(*) optimization
+ccmp_dumpunaligned   columnar compression dump dbas of unaligned CUs
+
+
+ORADEBUG DOC EVENT NAME <event_name>
+This syntax allows you to get more information about parameters for some events (especially these ones suffixed with [ ] in above output):
+
+SQL> ORADEBUG DOC EVENT NAME sql_trace
+
+sql_trace: event for sql trace
+
+Usage
+-------
+sql_trace
+   wait            < false | true >,
+   bind            < false | true >,
+   plan_stat       < never | first_execution | all_executions >,
+   level           <ub4>
+
+
+
+SQL> ORADEBUG DOC EVENT NAME trace
+
+trace: Main event to control UTS tracing
+
+Usage
+-------
+trace [ component       <string> ]
+   disk            < default | lowest | low | medium | high | highest | disable >,
+   memory          < default | lowest | low | medium | high | highest | disable >,
+   get_time        < disable | default | seq | highres | seq_highres >,
+   get_stack       < disable | default | force >,
+   operation       <string>,
+   function        <string>,
+   file            <string>,
+   line            <ub4>
+
+
+SQL> ORADEBUG DOC EVENT NAME kg_event
+
+kg_event: Support old error number events (use err# for short)
+
+Usage
+-------
+kg_event [ ]
+   level           <ub4>,
+   lifetime        <ub4>,
+   armcount        <ub4>,
+   traceinc        <ub4>,
+   forever         <ub4>
+
+
+ORADEBUG DOC EVENT SCOPE
+
+SQL> ORADEBUG DOC EVENT SCOPE
+
+Event scopes in library RDBMS:
+------------------------------
+SQL[]                sql scope for RDBMS
+
+
+ORADEBUG DOC EVENT SCOPE SQL
+The scope specifier allows you to fire events and trace only when Oracle is executing a specific SQL_ID:
+
+SQL> ORADEBUG DOC EVENT SCOPE SQL
+
+SQL: sql scope for RDBMS
+
+Usage
+-------
+[SQL:  sql_id          <string> ]
+
+
+ORADEBUG DOC EVENT FILTER
+The event filter allows you to fire event actions only when certain event filter conditions are met, like only when a specific (background) process hits the event, when a specific error condition is raised or when a specific function is in the call stack:
+
+SQL> ORADEBUG DOC EVENT FILTER
+
+Event filters in library DIAG:
+------------------------------
+occurence            filter to implement counting for event checks
+callstack            filter to only fire an event when a function is on the stack
+tag                  filter to only fire an event when a tag is set
+
+Event filters in library RDBMS:
+------------------------------
+process              filter to set events only for a specific process
+pgadep               filter to only fire an event when the pgadep matches a given value or falls within a range
+
+Event filters in library GENERIC:
+------------------------------
+errarg               filter to set error events only for a specific error argument
+
+
+You can get more documentation for each item listed in the above output:
+
+SQL> ORADEBUG DOC EVENT FILTER occurence
+
+occurence: filter to implement counting for event checks
+
+Usage
+-------
+{occurence:  start_after     <ub4>,
+             end_after       <ub4> }
+
+
+SQL> ORADEBUG DOC EVENT FILTER callstack
+
+callstack: filter to only fire an event when a function is on the stack
+
+Usage
+-------
+{callstack:  fname           <string>,
+             fprefix         <string>,
+             maxdepth        <ub4> }
+
+
+SQL> ORADEBUG DOC EVENT FILTER tag
+
+tag: filter to only fire an event when a tag is set
+
+Usage
+-------
+{tag:  tname           <string> }
+
+
+SQL> ORADEBUG DOC EVENT FILTER process
+
+process: filter to set events only for a specific process
+
+Usage
+-------
+{process:  ospid           <string>,
+           orapid          <ub4>,
+           pname           <string> }
+
+
+SQL> ORADEBUG DOC EVENT FILTER pgadep
+
+pgadep: filter to only fire an event when the pgadep matches a given value or falls within a range
+
+Usage
+-------
+{pgadep:  exactDepth      <ub4>,
+          lessThan        <ub4>,
+          greaterThan     <ub4> }
+
+
+SQL> ORADEBUG DOC EVENT FILTER errarg
+
+errarg: filter to set error events only for a specific error argument
+
+Usage
+-------
+{errarg:  arg1            <string>,
+          arg2            <string>,
+          arg3            <string>,
+          arg4            <string>,
+          arg5            <string>,
+          arg6            <string>,
+          arg7            <string>,
+          arg8            <string> }
+
+
+ORADEBUG DOC EVENT ACTION
+Finally, the action keyword defines what to do when the event has been hit:
+
+SQL> ORADEBUG DOC EVENT ACTION
+
+Actions in library DIAG:
+---------------------------
+dumpFrameContext      - Dump Frame Context contents
+dumpBuckets          
+kgsfdmp              
+dumpDiagCtx          
+dumpDbgecPopLoc      
+dumpDbgecMarks       
+dumpGenralConfiguration 
+dumpADRLockTable     
+act1                 
+action1              
+action2              
+UTDumpGC             
+dbgvci_action_signal_crash 
+
+Actions in library RDBMS:
+---------------------------
+incident              - Create an Incident
+sqlmon_dump           - SQL Monitor Dump SGA Action
+flashfreeze          
+oradebug              - debug process using ORADEBUG
+debugger              - debug process using System Debugger
+debug                
+  - alias for 'debugger' - debug  process using System Debugger
+crash                 - crash the instance
+eventdump             - list events that are set in the group
+kdlut_bucketdump_action 
+kzxt_dump_action     
+dumpKernelDiagState  
+HMCHECK              (async)
+DATA_BLOCK_INTEGRITY_CHECK (async)
+CF_BLOCK_INTEGRITY_CHECK (async)
+DB_STRUCTURE_INTEGRITY_CHECK (async)
+REDO_INTEGRITY_CHECK (async)
+TRANSACTION_INTEGRITY_CHECK (async)
+SQL_TESTCASE_REC     (async)
+SQL_TESTCASE_REC_DATA (async)
+ORA_12751_DUMP       
+sqladv_dump_dumpctx  
+ORA_4030_DUMP        
+  - dump summary of PGA memory usage, largest allocations
+kcfis_action          - kcfis actions
+exadata_dump_modvers  - Exadata dump module versions
+QUERY_BLOCK_DUMP      - Debug action for dumping a qbcdef tree
+ASM_MOUNT_FAIL_CHECK (async)
+ASM_ALLOC_FAIL_CHECK (async)
+ASM_ADD_DISK_CHECK   (async)
+ASM_FILE_BUSY_CHECK  (async)
+TRACE_BUFFER_ON       - Allocate trace output buffer for ksdwrf()
+TRACE_BUFFER_OFF     
+  - Flush and deallocate trace output buffer for ksdwrf()
+LATCHES               - Dump Latches
+XS_SESSION_STATE      - Dump XS session state
+PROCESSSTATE          - Dump process state
+SYSTEMSTATE           - Dump system state
+INSTANTIATIONSTATE    - Dump instantiation state
+CONTEXTAREA           - Dump cursor context area
+HEAPDUMP             
+  - Dump memory heap (1-PGA, 2-SGA, 4-UGA, +1024-Content)
+POKE_LENGTH           - Set length before poking value
+POKE_VALUE            - Poke a value into memory
+POKE_VALUE0           - Poke 0 value into memory
+GLOBAL_AREA          
+  - Dump fixed global area(s) (1=PGA/2=SGA/3=UGA, add +8 for pointer content)
+REALFREEDUMP          - Dump PGA real free memory allocator state
+FLUSH_JAVA_POOL       - Flush Java pool
+PGA_DETAIL_GET       
+  - Ask process to publish PGA detail info (level is pid)
+PGA_DETAIL_DUMP      
+  - Dump PGA detail information for process (level is pid) 
+PGA_DETAIL_CANCEL     - Free PGA detail request (level is pid)
+PGA_SUMMARY           - Summary of PGA memory usage, largest allocations
+MODIFIED_PARAMETERS   - Dump parameters modifed by session (level unused)
+ERRORSTACK           
+  - Dump state (ksedmp). Use INCIDENT action to create incident 
+CALLSTACK             - Dump call stack (level > 1 to dump args)
+RECORD_CALLSTACK     
+  - Record or dump call stack, level = #frames (level += 1000000 go to trc)
+BG_MESSAGES           - Dump routine for background messages
+ENQUEUES             
+  - Dump enqueues (level >=2 adds resources, >= 3 adds locks)
+KSTDUMPCURPROC       
+  - Dump current process trace buffer (1 for all events)
+KSTDUMPALLPROCS      
+  - Dump all processes trace buffers (1 for all events)
+KSTDUMPALLPROCS_CLUSTER 
+  - Dump all processes (cluster wide) trace buffers (1 for all events)
+KSKDUMPTRACE          - Dumping KSK KST tracing (no level)
+DBSCHEDULER           - Dump ressource manager state
+LDAP_USER_DUMP        - Dump LDAP user mode
+LDAP_KERNEL_DUMP      - Dump LDAP kernel mode
+DUMP_ALL_OBJSTATS     - Dump database objects statistics
+DUMPGLOBALDATA        - Rolling migration DUMP GLOBAL DATA
+HANGANALYZE           - Hang analyze
+HANGANALYZE_PROC      - Hang analyze current process
+HANGANALYZE_GLOBAL    - Hang analyze system
+GES_STATE             - Dump DML state
+OCR                   - OCR client side tracing
+CSS                   - CSS client side tracing
+CRS                   - CRS client side tracing
+SYSTEMSTATE_GLOBAL    - Perform cluster wide system state dump (via DIAG)
+DUMP_ALL_COMP_GRANULE_ADDRS 
+  - MMAN dump all granule addresses of all components (no level)
+DUMP_ALL_COMP_GRANULES 
+  - MMAN dump all granules of all components (1 for partial list)
+DUMP_ALL_REQS        
+  - MMAN dump all pending memory requests to alert log
+DUMP_TRANSFER_OPS     - MMAN dump transfer and resize operations history
+DUMP_ADV_SNAPSHOTS   
+  - MMAN dump all snapshots of advisories (level unused)
+CONTROLF              - DuMP control file info
+FLUSH_CACHE          
+  - Flush buffer cache without shuting down the instance
+BUFFERS               - Dump all buffers in the buffer cache at level l
+SET_TSN_P1           
+  - Set tablespace # for buffer dump (level = ts# + 1)
+BUFFER               
+  - Dump all buffers for full relative dba <level> at lvl 10
+BC_SANITY_CHECK      
+  - Run buffer cache sanity check (level = 0xFF for full)
+SET_NBLOCKS           - Set number of blocks for range reuse checks
+CHECK_ROREUSE_SANITY  - Check range/object reuse sanity (level = ts#)
+DUMP_PINNED_BUFFER_HISTORY 
+  - kcb Dump pinned buffers history (level = # buffers)
+REDOLOGS              - Dump all online logs according to the level
+LOGHIST              
+  - Dump the log history (1: dump earliest/latest entries, >1: dump most recent 2**level entries)
+REDOHDR               - Dump redo log headers
+LOCKS                 - Dump every lock element to the trace file
+GC_ELEMENTS           - Dump every lock element to the trace file
+FILE_HDRS             - Dump database file headers
+KRB_TRACE             - Set krb trace options
+FBINC                
+  - Dump flashback logs of the current incarnation and all its ancestors.
+FBHDR                 - Dump all the flashback logfile headers
+FLASHBACK_GEN         - Dump flashback generation state
+KTPR_DEBUG           
+  - Parallel txn recovery (1: cleanup check, 2: dump ptr reco ctx, 3: dump recent smon runs)
+DUMP_TEMP             - Dump temp space management state (no level)
+DROP_SEGMENTS         - Drop unused temporary segments
+TREEDUMP             
+  - Dump an index tree rooted at dba BLOCKDBA (<level>)
+KDLIDMP               - Dump 11glob inodes states (level = what to dump)
+ROW_CACHE             - Dump all cache objects
+LIBRARY_CACHE        
+  - Dump the library cache (level > 65535 => level = obj @)
+CURSORDUMP            - Dump session cursors
+CURSOR_STATS          - Dump all statistics information for cursors
+SHARED_SERVER_STATE   - Dump shared server state
+LISTENER_REGISTRATION  - Dump listener registration state
+JAVAINFO              - Dump Oracle Java VM
+KXFPCLEARSTATS        - Clear all Parallel Query messaging statistics
+KXFPDUMPTRACE         - Dump Parallel Query in-memory traces
+KXFXSLAVESTATE       
+  - Dump PX slave state (1: uga; 2: current cursor state; 3: all cursors)
+KXFXCURSORSTATE       - Dump PX slave cursor state
+WORKAREATAB_DUMP      - Dump SQL Memory Manager workarea table
+OBJECT_CACHE          - Dump the object cache
+SAVEPOINTS            - Dump savepoints
+RULESETDUMP           - Dump rule set
+FAILOVER              - Set condition failover immediate
+OLAP_DUMP             - Dump OLAP state
+AWR_FLUSH_TABLE_ON   
+  - Enable flush of table id <level> (ids in X$KEWRTB)
+AWR_FLUSH_TABLE_OFF  
+  - Disable flush of table id <level> (ids in X$KEWRTB)
+ASHDUMP               - Dump ASH data (level = # of minutes)
+HM_FW_TRACE           - DIAG health monitor set tracing level
+IR_FW_TRACE           - DIAG intelligent repair set/clear trace
+HEAPDUMP_ADDR        
+  - Heap dump by address routine (level > 1 dump content)
+POKE_ADDRESS          - Poke specified address (level = value)
+CURSORTRACE          
+  - Trace cursor by hash value (hash value is address)
+RULESETDUMP_ADDR      - Dump rule set by address
+
+Actions in library GENERIC:
+---------------------------
+xdb_dump_buckets     
+dumpKGERing           - Dump contents of KGE ring buffer
+
+Actions in library CLIENT:
+---------------------------
+kpuActionDefault      - dump OCI data
+kpuActionSignalCrash 
+  - crash and produce a core dump (if supported and possible)
+kpudpaActionDpapi     - DataPump dump action
+
+
+You can get more details about some actions by running the doc command for the library.action:
+
+SQL> ORADEBUG DOC EVENT ACTION RDBMS.query_block_dump
+QUERY_BLOCK_DUMP 
+ - Debug action for dumping a qbcdef tree
+Usage
+-------
+QUERY_BLOCK_DUMP( level           <ub4>)
+
+
+ORADEBUG DOC COMPONENT
+You can trace and set actions for Oracle kernel components (if you don't know exact function name which you want to trace). 
+
+The following command would apply the actions query_block_dump, processstate dump and call stack dump only when executing code in RDBMS.SQL_Transform module (the query transformation engine) and only when the SQL ID executed is 32cqz71gd8wy3. Disk=high allows tracing to disk (if that component is able to trace anything).
+
+SQL> alter session set events 'trace[RDBMS.SQL_Transform] [SQL: 32cqz71gd8wy3] disk=high RDBMS.query_block_dump(1) processstate(1) callstack(1)';
+
+Session altered.
+
+You can check what sub-components are there under the SQL_Transform component (and you can trace each of these individually if you like):
+
+SQL> ORADEBUG DOC COMPONENT RDBMS.SQL_Transform
+
+  SQL_Transform                SQL Transformation (kkq, vop, nso)
+    SQL_MVRW                   SQL Materialized View Rewrite
+    SQL_VMerge                 SQL View Merging (kkqvm)
+    SQL_Virtual                SQL Virtual Column (qksvc, kkfi)
+
+
+All (registered) components in Oracle kernel can be listed like this:
+
+SQL> ORADEBUG DOC COMPONENT
+
+
+Components in library DIAG:
+--------------------------
+  diag_uts                     Unified Tracing Service (dbgt, dbga)
+    uts_vw                     UTS viewer toolkit (dbgtp, dbgtn)
+  diag_adr                     Automatic Diagnostic Repository (dbgr)
+    ams_comp                   ADR Meta-data Repository (dbgrm)
+    ame_comp                   ADR Export/Import Services (dbgre)
+    ami_comp                   ADR Incident Meta-data Services (dbgri)
+    diag_ads                   Diagnostic Directory and File Services (dbgrf, sdbgrf, sdbgrfu, sdbgrfb)
+  diag_hm                      Diagnostic Health Monitor ((null))
+  diag_ips                     Diagnostic Incident Packaging System ((null))
+  diag_dde                     Diagnostic Data Extractor (dbge)
+  diag_fmwk                    Diagnostic Framework (dbgc)
+    diag_ilcts                 Diagnostic Inter-Library Compile-time Service (dbgf)
+    diag_attr                  Diagnostic Attributes Management ((null))
+    diag_comp                  Diagnostic Components Management ((null))
+  diag_testp                   Diagnostic component test parent (dbgt)
+    diag_testc1                Diagnostic component test child 1 ((null))
+    diag_testc2                Diagnostic component test child 2 ((null))
+  KGSD                         Kernel Generic Service Debugging (kgsd)
+  diag_events                  Diagnostic Events (dbgd)
+  diag_adl                     Diagnostic ARB Alert Log (dbgrl, dbgrlr)
+  diag_vwk                     Diagnostic viewer toolkit (dbgv)
+    diag_vwk_parser            Diagnostic viewer parser (dbgvp, dbgvl)
+    diag_vwk_uts               Diagnostic viewer for UTS traces and files (dbgvf)
+    diag_vwk_ams               Diagnostic viewer for AMS metadata (dbgvm)
+    diag_vwk_ci                Diagnostic viewer for command line (dbgvci)
+  kghsc                        KGHSC Compact Stream (kghsc)
+  dbgxtk                       DBGXTK xml toolkit (dbgxtk)
+
+Components in library RDBMS:
+--------------------------
+  SQL_Compiler                 SQL Compiler ((null))
+    SQL_Parser                 SQL Parser (qcs)
+    SQL_Semantic               SQL Semantic Analysis (kkm)
+    SQL_Optimizer              SQL Optimizer ((null))
+      SQL_Transform            SQL Transformation (kkq, vop, nso)
+        SQL_MVRW               SQL Materialized View Rewrite ((null))
+        SQL_VMerge             SQL View Merging (kkqvm)
+        SQL_Virtual            SQL Virtual Column (qksvc, kkfi)
+      SQL_APA                  SQL Access Path Analysis (apa)
+      SQL_Costing              SQL Cost-based Analysis (kko, kke)
+        SQL_Parallel_Optimization SQL Parallel Optimization (kkopq)
+      SQL_Plan_Management      SQL Plan Managment (kkopm)
+      SQL_Plan_Directive       SQL Plan Directive (qosd)
+    SQL_Code_Generator         SQL Code Generator (qka, qkn, qke, kkfd, qkx)
+      SQL_Parallel_Compilation SQL Parallel Compilation (kkfd)
+      SQL_Expression_Analysis  SQL Expression Analysis (qke)
+    MPGE                       MPGE (qksctx)
+    ADS                        ADS (kkoads)
+  SQL_Execution                SQL Execution (qer, qes, kx, qee)
+    Parallel_Execution         Parallel Execution (qerpx, qertq, kxfr, kxfx, kxfq, kxfp)
+      PX_Messaging             Parallel Execution Messaging (kxfp)
+      PX_Group                 Parallel Execution Slave Group (kxfp)
+      PX_Affinity              Parallel Affinity (ksxa)
+      PX_Buffer                Parallel Execution Buffers (kxfpb)
+      PX_Granule               Parallel Execution Granules (kxfr)
+      PX_Control               Parallel Execution Control (kxfx)
+      PX_Table_Queue           Parallel Execution Table Queues (kxfq)
+      PX_Scheduler             Parallel Execution Scheduler (qerpx)
+      PX_Queuing               Parallel Execution Queuing (kxfxq)
+      PX_Blackbox              Parallel Execution Blackbox (kxf)
+      PX_PTL                   Parallel Execution PTL (kxft)
+      PX_Expr_Eval             Parallel Execution Expression Evaluation ((null))
+      PX_Selector              Parallel Execution PX Selector (qerpsel)
+      PX_Overhead              Parallel Execution Overhead (qerpx, kxfr, kxfx, kxfp)
+    Bloom_Filter               Bloom Filter (qerbl, qesbl)
+    Vector_Processing          Vector Processing ((null))
+      Vector_Translate         Vector Translate (qkaxl, qerxl, qesxl, qesxlp, qerrc)
+      Vector_Aggregate         Vector Aggregate (qergv, qesgv)
+      Vector_PX                Vector PX (qesxlp, qerxl)
+    Time_Limit                 Query Execution Time Limit (opiexe, qerst)
+  PGA_Manage                   PGA Memory Management ((null))
+    PGA_Compile                PGA Memory Compilation ((null))
+    PGA_IMM                    PGA Memory Instance Manage ((null))
+    PGA_CMM                    PGA Memory Cursor Manage ((null))
+    PGA_ADV                    PGA Memory Advisor ((null))
+  rdbms_dde                    RDBMS Diagnostic Data Extractor (dbke)
+  VOS                          VOS (ks)
+    hang_analysis              Hang Analysis (ksdhng)
+    background_proc            Background Processes (ksb, ksbt)
+    system_param               System Parameters (ksp, kspt)
+    ksu                        Kernel Service User (ksu)
+      ksutac                   KSU Timeout Actions ((null))
+    ksv_trace                  Kernel Services Slave Management (ksv)
+    file                       File I/O (ksfd, ksfdaf)
+  sql_mon                      SQL Monitor (keswx)
+    sql_mon_deamon             SQL Monitor Deamon ((null))
+    sql_mon_query              SQL Monitor Query ((null))
+  CACHE_RCV                    Cache Recovery (kcv, kct, kcra, kcrp, kcb)
+    DLF                        Delayed Log Force ((null))
+  DIRPATH_LOAD                 Direct Path Load (kl, kdbl, kpodp)
+    DIRPATH_LOAD_BIS           Direct Path Kpodpbis Routine (kpodp)
+  RAC                          Real Application Clusters ((null))
+    GES                        Global Enqueue Service ((null))
+      KSI                      Kernel Service Instance locking (ksi)
+      RAC_ENQ                  Enqueue Operations ((null))
+      DD                       GES Deadlock Detection ((null))
+      RAC_BCAST                Enqueue Broadcast Operations ((null))
+      RAC_FRZ                  DLM-Client Freeze/Unfreeze (kjfz)
+      KJOE                     DLM Omni Enqueue service (kjoe)
+    GCS                        Global Cache Service (kjb)
+      GCS_BSCN                 Broadcast SCN (kjb, kcrfw)
+      GCS_READMOSTLY           GCS Read-mostly (kjb)
+      GCS_READER_BYPASS        GCS Reader Bypass (kjb)
+      GCS_DELTAPUSH            GCS Delta Push (kjb)
+    GSIPC                      Global Enqueue/Cache Service IPC ((null))
+    RAC_RCFG                   Reconfiguration ((null))
+    RAC_DRM                    Dynamic Remastering ((null))
+    RAC_MRDOM                  Multiple Recovery Domains ((null))
+    CGS                        Cluster Group Services (kjxg)
+    CGSIMR                     Instance Membership Recovery (kjxgr)
+    RAC_WLM                    Work Load Management (wlm)
+    RAC_MLMDS                  RAC Multiple LMS (kjm)
+    RAC_KA                     Kernel Accelerator (kjk)
+    RAC_LT                     RAC Latch Usage ((null))
+  db_trace                     RDBMS server only tracing ((null))
+  kst                          server trace layer tracing (kst)
+  ddedmp                       RDBMS Diagnostic Data Extractor Dumper (dbked)
+  cursor                       Shared Cursor (kxs, kks)
+    Bind_Capture               Bind Capture Tracing ((null))
+  KSM                          Kernel Service Memory (ksm)
+  KSE                          Kernel Service Error Manager (kse)
+  explain                      SQL Explain Plan (xpl)
+  rdbms_event                  RDBMS Events (dbkd)
+  LOB_INODE                    Lob Inode (kdli)
+  rdbms_adr                    RDBMS ADR (dbkr)
+  ASM                          Automatic Storage Management (kf)
+    KFK                        KFK (kfk)
+      KFKIO                    KFK IO (kfkio)
+      KFKSB                    KFK subs (kfksubs)
+    KFN                        ASM Networking subsystem (kfn)
+      KFNU                     ASM Umbillicus (kfnm, kfns, kfnb)
+      KFNS                     ASM Server networking (kfns)
+      KFNC                     ASM Client networking (kfnc)
+      KFNOR                    KFN orion (kfnor)
+    KFIS                       ASM Intelligent Storage interfaces (kfis)
+    KFM                        ASM Node Monitor Interface Implementation (kfm)
+      KFMD                     ASM Node Monitor Layer for Diskgroup Registration (kfmd)
+      KFMS                     ASM Node Monitor Layers Support Function Interface (kfms)
+    KFFB                       ASM Metadata Block (kffb)
+    KFFD                       ASM Metadata Directory (kffd)
+    KFZ                        ASM Zecurity subsystem (kfz)
+    KFC                        ASM Cache (kfc)
+    KFR                        ASM Recovery (kfr)
+    KFE                        ASM attributes (kfe)
+    KFDP                       ASM PST (kfdp)
+    KFG                        ASM diskgroups (kfg)
+    KFDS                       ASM staleness registry and resync (kfds)
+    KFIA                       ASM Remote (kfia)
+      KFIAS                    ASM IOServer (kfias)
+      KFIAC                    ASM IOServer client (kfiac)
+    KFFSCRUB                   ASM Scrubbing (kffscrub)
+    KFIO                       ASM translation I/O layer (kfio)
+    KFIOER                     ASM translation I/O layer (kfioer)
+    KFV                        ASM Volume subsystem (kfv)
+      KFVSU                    ASM Volume Umbillicus (kfvsu)
+      KFVSD                    ASM Volume Background (kfvsd)
+    KFDX                       ASM Exadata interface (kfdx)
+    KFZP                       ASM Password File Layer (kfzp)
+    KFA                        ASM Alias Operations (kfa)
+    KFF                        KFF (kff)
+    KFD                        ASM Disk (kfd)
+      KFDVA                    ASM Virtual ATB (kfdva)
+    KFTHA                      ASM Transparent High Availability (kftha)
+  DML                          DML Drivers (ins, del, upd)
+  Health_Monitor               Health Monitor ((null))
+  DRA                          Data Repair Advisor ((null))
+  DIRACC                       Direct access to fixed tables (kqfd)
+  PART                         Partitioning (kkpo, qespc, qesma, kkpa, qergi)
+    PART_IntPart               Interval Partitioning ((null))
+    PART_Dictionary            Partitioning Dictionary (kkpod)
+  LOB_KDLW                     Lob kdlw (kdlw)
+  LOB_KDLX                     Lob xfm (kdlx)
+  LOB_KDLXDUP                  Lob dedup (kdlxdup)
+  LOB_KDLRCI                   Lob rci (kdlrci)
+  LOB_KDLA                     SecureFile Archive (kdla)
+  SQL_Manage                   SQL Manageability (kes)
+    SQL_Manage_Infra           Other SQL Manageability Infrastructure (kesai, kesqs, kesatm, kesutl, kessi, keswat, keswts, keswsq)
+    SQL_Tune                   SQL Tuning Advisor (kest)
+      SQL_Tune_Auto            SQL Tuning Advisor (auto-tune) (kestsa)
+        Auto_Tune_Opt          Auto Tuning Optimizer (kkoat)
+      SQL_Tune_Index           SQL Tuning Advisor (index-tune) (kestsi)
+      SQL_Tune_Plan            SQL Tuning Advisor (plan node analysis) (kestsp)
+      SQL_Tune_Px              SQL Tuning Advisor (parallel execution) (kestsa)
+      SQL_Tune_Fr              SQL Tuning Advisor (fix regression) (kestsa)
+    SQL_Test_Exec              SQL Test-Execute Service (kestse)
+    SQL_Perf                   SQL Performance Analyzer (kesp, keswpi)
+    SQL_Repair                 SQL Repair Advisor (kesds)
+    SQL_trace_parser           SQL trace parser (kesstp)
+  SQL_Analyze                  SQL Analyze (qksan)
+  SQL_DS                       SQL Dynamic Sampling Services (qksds)
+  SQL_DDL                      SQL DDL (atb, ctc, dtb)
+  RAT_WCR                      Real Application Test: Workload Capture and Replay (kec)
+  Spatial                      Spatial (md)
+    Spatial_IND                Spatial Indexing (mdr)
+    Spatial_GR                 Spatial GeoRaster (mdgr)
+  Text                         Text (dr)
+  rdbms_gc                     RDBMS Diagnostic Generic Configuration (dbkgc)
+  XS                           XS Fusion Security (kzx)
+    XSSESSION                  XS Session (kzxs)
+    XSPRINCIPAL                XS Principal (kzxu)
+    XSSECCLASS                 XS Security Class (kzxc, kzxsp)
+    XSXDS                      XS Data Security (kzxd)
+    XSVPD                      XS VPD ((null))
+    XSXDB_DEFAULT              XS XDB ((null))
+    XS_MIDTIER                 XS Midtier (kpuzxs)
+    XSNSTEMPLATE               XS Namespace template (kzxnt)
+    XSACL                      XS ACL (kzxa)
+    XSADM                      XS Administrative operation (kzxm, kzxi)
+  AQ                           Streams Advanced Queuing (kwq, kkcn, kpon, kpoaq, kpce, kpcm, kpun, kpuaq, kws)
+    AQ_DEQ                     Streams Advanced Queuing Dequeue (kwqid, kwqdl)
+    AQ_BACK                    Streams Advanced Queueing Background (kwsbg, kwsbsm)
+      AQ_TM                    Streams Advanced Queuing Time Manager (kwqit, kwqmn)
+      AQ_CP                    Streams Advanced Queuing Cross Process (kwscp, kwsipc)
+      AQ_LB                    Streams Advanced Queuing Load Balancer (kwslb, kwslbbg)
+      AQ_NTFN                  Streams Advanced Queuing Notification (kpond, kkcne)
+        AQ_NTFNP12C            Streams Advanced Queuing pre-12c Notification (kwqic)
+      AQ_TMSQ                  Streams Advanced Queuing Time Manager for Sharded Queue (kwsbtm, kwsbjc, kwsbit)
+    AQ_MC                      Streams Advanced Queuing Message Cache (kwsmc, kwssh, kwsmb, kwsmsg, kwssb, kwschnk, kwscb, kwsdqwm, kwssbsh)
+    AQ_PT                      Streams Advanced Queuing Partitioning (kwspt)
+    AQ_SUB                     Streams Advanced Queuing Subscription (kwssi, kwssa, kwsnsm, kwsnsme)
+  KSFM                         Kernel Service File Mapping (ksfm)
+  KXD                          Exadata specific Kernel modules (kxd)
+    KXDAM                      Exadata Disk Auto Manage (kxdam)
+    KCFIS                      Exadata Predicate Push (kcfis)
+    NSMTIO                     Trace Non Smart I/O (nsmtio)
+    KXDBIO                     Exadata Block level Intelligent Operations (kxdbio)
+    KXDRS                      Exadata Resilvering Layer (kxdrs)
+    KXDOFL                     Exadata Offload (kxdofl)
+    KXDMISC                    Exadata Misc (kxdmisc)
+    KXDCM                      Exadata Metrics Fixed Table Callbacks (kxdcm)
+    KXDBC                      Exadata Backup Compression for Backup Appliance (kxdbc)
+  DV                           Database Vault (kzv)
+  ASO                          Advanced Security Option ((null))
+    RADM                       Real-time Application-controlled Data Masking (kzradm)
+  SVRMAN                       Server Manageability (ke)
+    AWR                        Automatic Workload Repository (kew)
+      ASH                      Active Session History (kewa)
+      METRICS                  AWR metrics (kewm)
+      REPOSITORY               AWR Repository (kewr)
+        FLUSH                  AWR Snapshot Flush (kewrf)
+        PURGE                  AWR Snapshot Purge (kewrps)
+      AWRUTL                   AWR Utilities (kewu)
+    AUTOTASK                   Automated Maintenance Tasks (ket)
+    MMON                       MMON/MMNL Infrastructure (keb)
+    SVRALRT                    Server Generated Alert Infrastructure (kel)
+  OLS                          Oracle Label Security (zll)
+  AUDITNG                      Database Audit Next Generation (aud, kza, kzft, aus, aop, ttp)
+    Configuration              ANG Configuration (aud, kza, kzft, aus, aop, ttp)
+    QueueWrite                 ANG Queue Write (aud, kza, kzft, aus, aop, ttp)
+    FileWrite                  ANG File Write (aud, kza, kzft, aus, aop, ttp)
+    RecordCompose              ANG Record Compose (aud, kza, kzft, aus, aop, ttp)
+    DBConsolidation            ANG Database Consolidation (aud, kza, kzft, aus, aop, ttp)
+    SYS_Auditing               ANG SYS Auditing (aud, kza, kzft, aus, aop, ttp)
+  KJCI                         KJCI Cross Instance Call (kjci)
+  KJZ                          KJZ - DIAG (kjz)
+    KJZC                       KJZC - DIAG Communication Layer (kjzc)
+    KJZD                       KJZD - DIAG Main Layer (kjzd)
+    KJZF                       KJZF - DIAG Flow Control Layer (kjzf)
+    KJZG                       KJZG - DIAG Group Services Layer (kjzg)
+    KJZH                       KJZH - DIAG API Layer (kjzh)
+    KJZM                       KJZM - DIAG Membership Layer (kjzm)
+  SEC                          Security (kz)
+    CBAC                       Code-Based Access Control (kzc)
+  dbop                         DBOP monitoring (keomn)
+    dbop_gen                   DBOP generic service (keomg)
+      dbop_deamon              DBOP monitoring Deamon (keomg)
+    dbop_comp                  DBOP composite type (keomm)
+  em_express                   EM Express (kex)
+  orarep                       orarep (ker)
+  Data                         Data Layer (kd, ka)
+    KDS                        Kernel Data Scan (kds)
+      KDSRID                   Fetch By Rowid (kdsgrp, kdsgnp)
+      KDSFTS                   Full Table Scan (kdsttgr, kdstgr)
+      KDSCLU                   Cluster Table Scan (kdsics, kdscgr)
+    KDI                        Index Layer (kdi)
+      KDIZOLTP                 OLTP HIGH Index (kdizoltp)
+      KDXOKCMP                 Auto Prefix Compressed Index (kdxokcmp)
+      KDIL                     Index Load (kdil)
+  RAT                          Real Application Testing (kec)
+    RAT_MASK                   Real Application Testing: Masking (kesm, kecprm)
+  BA                           Backup Appliance (kbrs)
+  KBC                          BA Containers (kbc)
+  connection_broker            Connection Broker (kmp)
+  KRA                          Kernel Recovery Area Function (kra)
+  KRA_SQL                      KRA SQL Tracing ((null))
+  KRB                          Kernel Backup Restore (krb)
+    KRB_THREAD                 KRBBPC Thread Switches ((null))
+    KRB_IO                     KRB I/O ((null))
+    KRB_INCR                   KRB Incremental Restore ((null))
+    KRB_PERF                   KRB Performance Tracing ((null))
+    KRB_BPOUTPUT               Detailed Backup Piece Output ((null))
+    KRB_BPVAL                  Detailed Block List During Restore Validate ((null))
+    KRB_FLWRES                 Details on Restore Flow ((null))
+    KRB_FLWCPY                 Details on krbydd Flow ((null))
+    KRB_FLWBCK                 Details on Backup Flow ((null))
+    KRB_FLWUSAGE               RMAN Feature Usage ((null))
+    KRB_OPTIM                  Unused Space Compression ((null))
+  KRBABR                       Auto Block Media Recovery (krbabr)
+  KRC                          Recovery Block Change Tracking (krc)
+  KRC_CHANGES                  Recovery Block Change Tracking CHANGES ((null))
+  IM                           in-memory ((null))
+    IM_transaction             IM transaction layer ((null))
+      IM_Txn_PJ                IM Txn Private Journal (ktmpj)
+      IM_Txn_SJ                IM Txn Shared Journal (ktmsj)
+      IM_Txn_JS                IM Txn Journal Scan (ktmjs)
+      IM_Txn_Conc              IM Txn Concurrency (ktmc)
+      IM_Txn_Blk               IM Txn Block (ktmb)
+      IM_Txn_Read              IM Txn Read (ktmr)
+    IM_space                   IM space layer ((null))
+    IM_data                    IM data layer (kdm)
+      IM_populate              IM populating (kdml)
+      IM_background            IM background (kdmr)
+      IM_scan                  IM scans ((null))
+      IM_journal               IM journal ((null))
+      IM_dump                  IM dump ((null))
+      IM_FS                    IM faststart ((null))
+      IM_optimizer             IM optimizer (kdmo)
+  xdb_wallet                   XDB Wallet (kzs)
+  PROGINT                      Programmatic Interfaces (kp)
+    OCI                        OCI (oci, kpk, kpn)
+    OPI                        OPI (opi)
+    RPI                        RPI (rpi, kpr)
+    NPI                        NPI (npi, nco, kpfs)
+    Two_Task                   Two Task (osn, ksn)
+    PROGINT_PLSQL              Programmatic Interfaces to/from PL/SQL (kkx, psd, pckl, plswa)
+    Two_Phase                  Two-phase commit (k2)
+    Conn_Pool                  Connection Pool (kppl)
+    TSM                        Transparent Session Migration (kpm, kps)
+    PROGINT_MISC               Progint Miscellaneous (kpo, kpbf, kpin)
+
+Components in library GENERIC:
+--------------------------
+  Generic_VOS                  Generic VOS ((null))
+    VOS_Heap_Manager           VOS Heap Manager ((null))
+    VOS_Latches                VOS Latches ((null))
+    VOS_GST                    VOS Generic Stack Trace (kgds)
+  XML                          XML (qmxt, qmxq)
+  Generic_XDB                  Generic XDB ((null))
+    XDB_Repository             XDB Repository (qme)
+    XDB_Protocols              XDB Protocols (qmh, qmf, qmn)
+    XDB_Query                  XDB Query (qmxtra, qerxp)
+    XDB_XMLIndex               XDB XMLIndex (qmxtri, qmixq)
+    XDB_Schema                 XDB Schema (qmxtri, qmixq)
+    XDB_XOB                    XDB XOB (qmx)
+    XDB_CSX                    XDB CSX (qmcx)
+      XDB_CSX_ENCODING         XDB CSX ENCODING (qmcxe, qmcxm)
+      XDB_CSX_DECODING         XDB CSX DECODING (qmcxd)
+      XDB_CSX_SELFCON          XDB CSX SELFCON (qmcxe)
+    XDB_Default                XDB Default ((null))
+  LOB                          LOB (koll, kola)
+    LOB_Refcount               LOB Refcount (kolr)
+    LOB_Default                LOB Default (kole,  kokl, koxs, kokla, koklm, koklv)
+  KGH                          KGH Memory Allocator (kgh)
+  KGF                          ASM Automatic Storage Management (kgf)
+  LIBCACHE                     LIBCACHE (kgl, kql)
+  OBJECTS                      OBJECTS ((null))
+    OBJECTS_DDL                OBJECTS DDL (kokt)
+    OBJECTS_Types              OBJECTS Types (kot, ko, ort)
+    OBJECTS_Images             OBJECTS Images (koke, kot, kad)
+    OBJECTS_Anydata            OBJECTS Anydata (kokla, kolo, kot, kad)
+    OBJECTS_Streams            OBJECTS Streams (koxs)
+    OBJECTS_Dict               OBJECTS Dictionary (kkdo, qcdo)
+    OBJECTS_Semanal            OBJECTS Semantic Analysis (koks, qcso, qcto)
+    OBJECTS_Default            OBJECTS Default ((null))
+  KGFPM                        PATCH repository (kgfpm)
+  KGFDVF                       Voting File Interface (kgfdvf)
+  Shared_Objects               Shared Object Manager (pes)
+    SO_Loader                  Native Code Loader (pesld)
+
+Components in library CLIENT:
+--------------------------
+  Client_KPU                   Client KPU ((null))
+    KPU_Memory                 KPU Memory ((null))
+    KPU_TTC                    KPU TTC ((null))
+    KPU_Relational             KPU Relational ((null))
+    KPU_Objects                KPU Objects ((null))
+    KPU_LOBS                   KPU LOBS ((null))
+  progint_appcont              Prog Interfaces Application Continuity ((null))
+    progint_appcont_rdbms      Prog Interfaces Application Continuity RDBMS-side ((null))
+  SQLLDR_Load                  SQLLDR Load (ul)
+  DPAPI_Load                   DPAPI Load (kpudp)
+
+Components in library LIBCELL:
+--------------------------
+  Client_Library               Client Library ((null))
+    Disk_Layer                 Disk Layer ((null))
+    Network_Layer              Network Layer ((null))
+    IPC_Layer                  IPC Layer ((null))
+
+Components in library ORANET:
+--------------------------
+  TNSLSNR                      OraNet Listener ((null))
+    NET_NSGR                   Network Service Generic Registration ((null))
+    NET_NSGI                   TNI Network Service Generic Listener User-defined class ((null))
+  CMAN                         OraNet Connection Manager ((null))
+  NET                          OraNet Services ((null))
+    NET_NI                     Network Interface Layer ((null))
+    NET_NS                     Network Session Layer ((null))
+    NET_NT                     Network Transport Layer ((null))
+    NET_NTM                    Network Transport Mailbox Layer ((null))
+    NET_NTP                    Network Transport IPC Layer ((null))
+    NET_NTT                    Network Transport TCP/IP Layer ((null))
+    NET_NTUS                   Network Transport Unix Domain Sockets Layer ((null))
+    NET_NL                     Network Library ((null))
+    NET_NA                     Network Authentication ((null))
+    NET_NZ                     Network Zecurity ((null))
+    NET_NTZ                    Network SSL ((null))
+    NET_NU                     Network Trace Route Utility ((null))
+    NET_NN                     Network Names ((null))
+
+Components in library ADVCMP:
+--------------------------
+  ADVCMP_MAIN                  Archive Compression (kdz)
+    ADVCMP_COMP                Archive Compression: Compression (kdzc, kdzh, kdza)
+    ADVCMP_DECOMP              Archive Compression: Decompression (kdzd, kdzs)
+      ADVCMP_DECOMP_HPK        Archive Compression: HPK (kdzk)
+      ADVCMP_DECOMP_PCODE      Archive Compression: Pcode (kdp)
+
+Components in library PLSQL:
+--------------------------
+  PLSQL_Apps                   PL/SQL Apps (di, pi, plitblm, scm, std, textio, wpiutil)
+  PLSQL_Codegen                PL/SQL Codegen ((null))
+    PLSQL_COG_IDL_Gen          PL/SQL Codegen IDL Gen (pdw)
+    PLSQL_COG_Infrastructure   PL/SQL Codegen Infrastructure (pdz)
+    PLSQL_COG_Native           PL/SQL Codegen Native (pdn)
+    PLSQL_COG_Optimizer        PL/SQL Codegen Optimizer (pdx)
+    PLSQL_COG_MCode_Gen        PL/SQL Codegen MCode Gen (pdy)
+  PLSQL_Code_Execution         PL/SQL Code Execution (pb, pd, pe, pf, plst, pri)
+  PLSQL_External_Proc          PL/SQL External Proc (pef, ociextp)
+  PLSQL_IDL                    PL/SQL IDL (pdt, pt)
+  PLSQL_ILMS                   PL/SQL ILMS (pgm)
+  PLSQL_KNLDE                  PL/SQL KNLDE (pbbicd, pbp3g, pbs, pbt3g, peibp)
+  PLSQL_KG_Interface           PL/SQL KG Interface (bam, hep, hsh, lis, par, phdr, pk)
+  PLSQL_Infrastructure         PL/SQL Infrastructure (pci, pcm, ph, pl, pncutil, pp, ps, pu, tre)
+  PLSQL_PSD                    PL/SQL PSD ((null))
+    PLSQL_PSD_Generic          PL/SQL PSD Generic (psd, pso, psu)
+    PLSQL_PSD_Standalones      PL/SQL PSD Standalones (p2c, pls, psx)
+  PLSQL_Semantics              PL/SQL Semantics (ph2, pha, phn)
+  PLSQL_Syntax                 PL/SQL Syntax (ph1)
+
