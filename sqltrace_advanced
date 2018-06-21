@@ -1,0 +1,64 @@
+--https://www.freelists.org/post/oracle-l/Explain-Plan-and-Security,17
+--https://www.freelists.org/post/oracle-l/Explain-Plan-and-Security,18
+
+******************
+-- Create test objects
+create table t1 (a number);
+create index t1_i on t1(a);
+insert into t1 select rownum from dba_objects where rownum <= 10;
+commit;
+exec dbms_stats.gather_table_stats (USER,'T1');
+
+-- Test SQL just for information
+select * from t1;   --> SQL-ID: 27uhu2q2xuu7r
+
+-- 11.2 solution
+alter system flush shared_pool;
+alter session set events 'sql_trace[SQL: 27uhu2q2xuu7r] {callstack: fname 
+opifch2} {pgadep: exactdepth 0} plan_stat=never,wait=false,bind=false crash()';
+select * from t1;
+select * from table (DBMS_XPLAN.DISPLAY_CURSOR('27uhu2q2xuu7r',0,'ALL ALLSTATS 
+OUTLINE PEEKED_BINDS LAST'));
+
+-- 12.2 solution (as event filter "pgadep" in RDBMS library is not available 
+anymore)
+alter system flush shared_pool;
+alter session set events 'sql_trace[SQL: 27uhu2q2xuu7r] {callstack: fname 
+opifch}  plan_stat=never,wait=false,bind=false crash()';
+select * from t1;
+select * from table (DBMS_XPLAN.DISPLAY_CURSOR('27uhu2q2xuu7r',0,'ALL ALLSTATS 
+OUTLINE PEEKED_BINDS LAST'));
+******************
+
+
+The process aborts with "ORA-03113: end-of-file on communication channel" right 
+before/at fetching the data - so this should exactly fit your needs / security 
+requirements :-)
+
+-------------**************-------------------
+
+
+There's an *action* controlc_signal in recent Oracle versions (12.2, maybe
+earlier), so you won't have to crash the process:
+
+SQL> *oradebug doc event action controlc_signal*
+controlc_signal
+- received 1013 signal
+Usage
+-------
+controlc_signal()
+
+
+SQL> ALTER SESSION SET EVENTS 'sql_trace[SQL: 3vjxpmhhzngu4] {callstack:
+fname opifch} *controlc_signal()*';
+
+Session altered.
+
+SQL> SELECT * FROM dual;
+ERROR:
+*ORA-01013: user requested cancel of current operation*
+
+
+no rows selected
+
+SQL>
