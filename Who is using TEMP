@@ -1,0 +1,47 @@
+--https://seanstuber.wordpress.com/2018/03/08/who-is-using-temp-and-what-are-they-doing/
+SELECT inst_id,
+       username,
+       sid,
+       segment_type,
+       TO_CHAR(segment_bytes, '999,999,999,999') segment_bytes,
+       TO_CHAR(session_temp_bytes, '999,999,999,999') session_bytes,
+       tablespace,
+       TO_CHAR(tablespace_bytes, '999,999,999,999') tablespace_bytes,
+       sql_id,
+       event,
+       --sql_text,
+       --sql_fulltext,
+       parent_sid,
+       parent_instid
+  FROM (  SELECT s.inst_id,
+                 su.username,
+                 s.sid,
+                 CASE WHEN ROUND(BITAND(s.ownerid, 16711680) / 65536) != 255 THEN ROUND(BITAND(s.ownerid, 65535)) END
+                     parent_sid,
+                 NULLIF(ROUND(BITAND(s.ownerid, 16711680) / 65536), 255)
+                     parent_instid,
+                 su.tablespace,
+                 su.segtype
+                     segment_type,
+                 su.blocks * t.block_size
+                     segment_bytes,
+                 SUM(su.blocks) OVER (PARTITION BY s.inst_id, s.sid) * t.block_size
+                     session_temp_bytes,
+                 SUM(su.blocks) OVER (PARTITION BY su.tablespace) * t.block_size
+                     tablespace_bytes,
+                 s.sql_id,
+                 s.event,
+                 (SELECT sql_text
+                    FROM gv$sqlarea sq
+                   WHERE sq.inst_id = s.inst_id AND sq.sql_id = s.sql_id)
+                     sql_text,
+                 (SELECT sql_fulltext
+                    FROM gv$sqlarea sq
+                   WHERE sq.inst_id = s.inst_id AND sq.sql_id = s.sql_id)
+                     sql_fulltext
+            FROM gv$sort_usage su, dba_tablespaces t, gv$session s
+           WHERE t.tablespace_name = su.tablespace AND su.inst_id = s.inst_id AND su.session_addr = s.saddr
+        ORDER BY session_temp_bytes DESC,
+                 sid,
+                 segment_bytes DESC,
+                 segtype);
