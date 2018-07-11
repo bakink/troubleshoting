@@ -1,0 +1,262 @@
+--https://chinaraliyev.wordpress.com/2018/07/11/library-cache-pin-wait-and-distributed-queries/
+
+SELECT event,
+       ROUND (cnt * 100 / (SUM (cnt) OVER ()), 2) "%",
+       ROUND (SUM (cnt) OVER () / 6, 2) "DB Time in Minute",
+       ROUND (SUM (cnt) OVER () / 6 /20,2) "AAS",
+       (select value from v$parameter where name='cpu_count') "Cpu Count"
+  FROM (SELECT NVL (event, 'CPU') event, COUNT ( * ) cnt
+          FROM dba_hist_active_sess_history
+         WHERE sample_time BETWEEN TO_DATE ('04-07-2018 17:50:00',
+                                            'dd-mm-yyyy hh24:mi:ss'
+                                   )
+                               AND  TO_DATE ('04-07-2018 18:10:00',
+                                             'dd-mm-yyyy hh24:mi:ss'
+                                    )
+        GROUP BY event
+        ORDER BY 2 DESC);
+ 
+EVENT                                %         DB Time in Minute   AAS     Cpu Count
+------------------------------------ -------   -----------------   -----   ---------
+library cache pin                    99.47     5320                266     4
+SQL*Net message from dblink            .47     5320                266     4
+CPU                                    .02     5320                266     4
+SQL*Net more data from dblink          .01     5320                266     4
+ksdxexeotherwait                       .01     5320                266     4
+enq: TX - row lock contention          .01     5320                266     4
+db file scattered read                   0     5320                266     4
+db file async I/O submit                 0     5320                266     
+
+SELECT distinct snap_id
+          FROM dba_hist_active_sess_history
+         WHERE sample_time BETWEEN TO_DATE ('04-07-2018 17:50:00',
+                                            'dd-mm-yyyy hh24:mi:ss'
+                                   )
+                               AND  TO_DATE ('04-07-2018 18:10:00',
+                                             'dd-mm-yyyy hh24:mi:ss'
+                                    );
+   SNAP_ID
+----------
+     15144
+     15145
+     
+     
+SELECT
+           os1.stat_name,
+           os1.VALUE prev_value,
+           os2.VALUE cur_value,
+           (os2.VALUE - os1.VALUE) VALUE
+  FROM dba_hist_osstat os1, dba_hist_osstat os2
+ WHERE     os1.snap_id = 15144
+         AND os2.snap_id = 15145
+         AND os1.stat_name = os2.stat_name
+         AND os1.stat_name IN
+        ('SYS_TIME', 'USER_TIME', 'BUSY_TIME', 'IDLE_TIME', 'LOAD','IOWAIT_TIME');
+ 
+STAT_NAME        PREV_VALUE   CUR_VALUE     VALUE
+------------     -----------  -----------   ------------
+IDLE_TIME        3364835132   3366212913    1377781
+BUSY_TIME        499756687    499814678      57991
+USER_TIME        448589295    448637270      47975
+SYS_TIME         47664441     47674199       9758
+IOWAIT_TIME      74915285     74925120       9835
+LOAD             .26953125    .139648438    -.12988281
+
+
+SELECT sql_id, sample, ROUND (sample * 100 / SUM (sample) OVER (), 2) "%"
+      FROM (SELECT sql_id, COUNT ( * ) sample
+              FROM dba_hist_active_sess_history
+             WHERE sample_time BETWEEN TO_DATE ('04-07-2018 17:50:00',
+                                                'dd-mm-yyyy hh24:mi:ss'
+                                       )
+                                   AND  TO_DATE ('04-07-2018 18:10:00',
+                                                 'dd-mm-yyyy hh24:mi:ss'
+                                        )
+                  AND event = 'library cache pin'
+           GROUP BY sql_id
+           ORDER BY 2 DESC);
+ 
+SQL_ID            SAMPLE          %
+------------- ---------- ----------
+akb5ynxbfcgta      29700      93.54
+fnsxa2h8r0pf6       1339       4.22
+4b791875tzuag        566       1.78
+81pgzg0bxhqcq        108        .34
+ddf9f04xgcb95         39        .12
+
+
+SELECT event, COUNT ( * )
+  FROM dba_hist_active_sess_history
+ WHERE sample_time BETWEEN TO_DATE ('04-07-2018 17:50:00',
+                                    'dd-mm-yyyy hh24:mi:ss'
+                           )
+                       AND  TO_DATE ('04-07-2018 18:10:00',
+                                     'dd-mm-yyyy hh24:mi:ss'
+                            )
+       AND sql_id = 'akb5ynxbfcgta'
+GROUP BY event
+ORDER BY 2 DESC;
+ 
+EVENT                   COUNT(*)
+------------------      ---------
+library cache pin       29700
+ksdxexeotherwait        4
+
+
+SELECT blocking_session, blocking_session_serial#, COUNT ( * )
+  FROM dba_hist_active_sess_history
+ WHERE sample_time BETWEEN TO_DATE ('04-07-2018 17:50:00',
+                                    'dd-mm-yyyy hh24:mi:ss'
+                           )
+                       AND  TO_DATE ('04-07-2018 18:10:00',
+                                     'dd-mm-yyyy hh24:mi:ss'
+                            )
+       AND sql_id = 'akb5ynxbfcgta'
+GROUP BY blocking_session, blocking_session_serial#
+ORDER BY 3 DESC;
+ 
+BLOCKING_SESSION BLOCKING_SESSION_SERIAL#   COUNT(*)
+---------------- ------------------------ ----------
+              59                    46957      29594
+             146                    38992        105
+                                                   4
+             420                    31202          1
+             
+SELECT NVL (event, 'CPU') event, COUNT ( * )
+  FROM dba_hist_active_sess_history
+ WHERE sample_time BETWEEN TO_DATE ('04-07-2018 17:50:00',
+                                    'dd-mm-yyyy hh24:mi:ss'
+                           )
+                       AND  TO_DATE ('04-07-2018 18:10:00',
+                                     'dd-mm-yyyy hh24:mi:ss'
+                            )
+       AND session_id = 59
+       AND session_serial# = 46957
+GROUP BY event;
+ 
+EVENT                     COUNT(*)
+-----------------------   --------
+library cache pin         106
+ksdxexeotherwait          2
+
+ELECT blocking_session, blocking_session_serial#, COUNT ( * )
+  FROM dba_hist_active_sess_history
+ WHERE sample_time BETWEEN TO_DATE ('04-07-2018 17:50:00',
+                                    'dd-mm-yyyy hh24:mi:ss'
+                           )
+                       AND  TO_DATE ('04-07-2018 18:10:00',
+                                     'dd-mm-yyyy hh24:mi:ss'
+                            )
+       AND session_id = 59
+       AND session_serial# = 46957
+GROUP BY blocking_session, blocking_session_serial#
+ORDER BY 3 DESC;
+ 
+BLOCKING_SESSION BLOCKING_SESSION_SERIAL#   COUNT(*)
+---------------- ------------------------ ----------
+             146                    38992        105
+                                                   2
+             420                    31202          1
+             
+
+SELECT NVL (event, 'CPU') event, COUNT ( * )
+  FROM dba_hist_active_sess_history
+ WHERE sample_time BETWEEN TO_DATE ('04-07-2018 17:50:00',
+                                    'dd-mm-yyyy hh24:mi:ss'
+                           )
+                       AND  TO_DATE ('04-07-2018 18:10:00',
+                                     'dd-mm-yyyy hh24:mi:ss'
+                            )
+       AND session_id = 146
+       AND session_serial# = 38992
+GROUP BY event
+ORDER BY 2 DESC;
+ 
+EVENT                                COUNT(*)
+------------------------------------ ----------
+SQL*Net message from dblink          119
+
+SELECT sql_id, COUNT ( * )
+  FROM dba_hist_active_sess_history
+ WHERE sample_time BETWEEN TO_DATE ('04-07-2018 17:50:00',
+                                    'dd-mm-yyyy hh24:mi:ss'
+                           )
+                       AND  TO_DATE ('04-07-2018 18:10:00',
+                                     'dd-mm-yyyy hh24:mi:ss'
+                            )
+       AND session_id = 146
+       AND session_serial# = 38992
+GROUP BY sql_id
+ORDER BY 2 DESC;
+ 
+SQL_ID          COUNT(*)
+------------- ----------
+6w1wcftvt2ajx        119
+
+SELECT sql_plan_line_id, sql_exec_id, sql_exec_start
+  FROM dba_hist_active_sess_history
+ WHERE sample_time BETWEEN TO_DATE ('04-07-2018 17:50:00',
+                                    'dd-mm-yyyy hh24:mi:ss'
+                           )
+                       AND  TO_DATE ('04-07-2018 18:10:00',
+                                     'dd-mm-yyyy hh24:mi:ss'
+                            )
+       AND sql_id = '6w1wcftvt2ajx'
+       AND session_id = 146
+       AND session_serial# = 38992
+       AND ROWNUM<=10;
+   
+SQL_PLAN_LINE_ID SQL_EXEC_ID SQL_EXEC_START
+---------------- ----------- --------------------
+                    20717997 29-jun-2018 18:04:41
+                    20717997 29-jun-2018 18:04:41
+                    20717997 29-jun-2018 18:04:41
+                    20717997 29-jun-2018 18:04:41
+                    20717997 29-jun-2018 18:04:41
+
+SELECT event, session_id, session_serial#, COUNT ( * )
+  FROM dba_hist_active_sess_history
+ WHERE sample_time BETWEEN TO_DATE ('04-07-2018 17:50:00',
+                                    'dd-mm-yyyy hh24:mi:ss'
+                           )
+                       AND  TO_DATE ('04-07-2018 18:10:00',
+                                     'dd-mm-yyyy hh24:mi:ss'
+                            )
+       AND user_id = 242
+GROUP BY session_id, event, session_serial#
+ORDER BY 4;
+ 
+EVENT                           SESSION_ID    SESSION_SERIAL#   COUNT(*)
+----------------------------    ------------  ---------------   --------- 
+inactive transaction branch     829           37606             120
+
+//////////////////////////////****************
+
+SQL>  @dash_wait_chains  event2 1=1 "timestamp'2018-07-04 17:50:00'" "timestamp'2018-07-04 18:10:00'"
+ 
+%This     SECONDS        AAS WAIT_CHAIN
+------ ---------- ---------- ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  95%      303620        253 -> library cache pin  -> library cache pin  -> SQL*Net message from dblink
+   3%        8720        7.3 -> library cache pin  -> ksdxexeotherwait
+   1%        4130        3.4 -> library cache pin  -> library cache pin  -> ksdxexeotherwait
+   0%        1510        1.3 -> SQL*Net message from dblink
+   0%        1050         .9 -> library cache pin  -> SQL*Net message from dblink
+   0%          50          0 -> ON CPU
+   0%          40          0 -> ksdxexeotherwait
+   0%          40          0 -> SQL*Net more data from dblink
+   0%          20          0 -> enq: TX - row lock contention  -> [idle blocker 1,154,55777]
+   0%          10          0 -> db file async I/O submit
+   0%          10          0 -> db file scattered read
+ 
+11 rows selected.
+
+@dash_wait_chains  session_id||':'||session_serial#||'-'||event2 1=1 "timestamp'2018-07-04 17:50:00'" "timestamp'2018-07-04 18:10:00'"
+ 
+%This     SECONDS        AAS WAIT_CHAIN
+------ ---------- ---------- ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+   0%        1190          1 -> 146:38992-SQL*Net message from dblink
+   0%        1050         .9 -> 59:46957-library cache pin  -> 146:38992-SQL*Net message from dblink
+   0%        1030         .9 -> 94:51427-library cache pin  -> 59:46957-library cache pin  -> 146:38992-SQL*Net message from dblink
+   0%        1030         .9 -> 105:36467-library cache pin  -> 59:46957-library cache pin  -> 146:38992-SQL*Net message from dblink
+   0%        1030         .9 -> 904:46554-library cache pin  -> 59:46957-library cache pin  -> 146:38992-SQL*Net message from dblink
+   0%        1030         .9 -> 1254:40336-library cache pin  -> 59:46957-library cache pin  -> 146:38992-SQL*Net message from dblink
