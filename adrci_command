@@ -1,0 +1,6 @@
+
+show incident -orderby CREATE_TIME dsc
+
+show incident -p "INCIDENT_ID=14417" -mode brief
+
+ show problem –p "PROBLEM_ID=1"
