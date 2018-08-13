@@ -1,0 +1,9 @@
+
+select count(*) COUNT, userhost,os_username, username, terminal, returncode
+from
+ dba_audit_trail 
+WHERE RETURNCODE in (1017,28000) 
+ and timestamp > sysdate -1/1440 
+group by os_username, username, terminal, returncode,userhost
+ order by count desc; 
+ 
