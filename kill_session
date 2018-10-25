@@ -1,0 +1,3 @@
+
+select 'kill -9 '||b.spid from gv$session a,gv$process  b where a.username is null and a.inst_id=1 and a.type='USER'
+and a.inst_id=b.inst_id and a.paddr=b.addr --and a.service_name='OPUSAZNET' 
