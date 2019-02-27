@@ -1,2 +1,192 @@
 
 https://oracle2amar.wordpress.com/2010/11/29/script-to-find-the-blocking-sqls-during-the-deadlock-situations/
+
+
+script to find the blocking sqls during the deadlock situations
+By Amar Leave a Comment
+Categories: Oracle-Scripts 
+select distinct a.sid “waiting sid”,
+d.sql_text “waiting SQL”,
+a.ROW_WAIT_OBJ# “locked object”,
+a.BLOCKING_SESSION “blocking sid”,
+c.sql_text “SQL from blocking session”
+from v$session a, v$active_session_history b, v$sql c, v$sql d
+where
+a.sql_id=d.sql_id
+and a.blocking_session=b.session_id
+and c.sql_id=b.sql_id
+and b.CURRENT_OBJ#=a.ROW_WAIT_OBJ#
+and b.CURRENT_FILE#= a.ROW_WAIT_FILE#
+and b.CURRENT_BLOCK#= a.ROW_WAIT_BLOCK#
+
+Output would like as shown below:
+
+waiting sid
+———–
+waiting SQL
+——————————————————————————–
+
+locked object blocking sid
+————- ————
+SQL from blocking session
+——————————————————————————–
+
+143
+update SCOTT.TEST set txt=’ses1′ where num=4
+52776          144
+update SCOTT.TEST set txt=’ses2′ where num=3
+
+To find the object name from dba_objects:
+SQL> select object_name from dba_objects where object_id=52776;
+
+OBJECT_NAME
+——————————————————————————–
+
+TEST
+
+Query II
+
+Finding the Responsible SQL
+The wait interface enables us to measure the overall magnitude of lock contention and to identify which specific locks are most associated with contention. However, to identify the probable causes and solutions for our locking issues—at least for application locking issues—we want to identify the parts of the application most responsible for lock waits.
+
+If you are licensed for the Oracle Diagnostic pack, you can examine Active Session History (ASH) and Active Workload Repository (AWR) tables to identify the SQLs concerned or use the appropriate parts of Oracle Enterprise Manager. For instance, in Figure 15-2 clicking on the hyperlink in the SQL ID column of the Top SQL table can identify the SQLs most associated with the row level locks during the period selected.
+
+You can also, providing you have a license for the diagnostic pack, query the ASH or AWR tables directly. The following query shows the SQLs and objects contributing to lock waits in the Active Session History (typically including information for the last hour or so):
+
+Code View: Scroll / Show All
+SQL> WITH ash_query AS (
+  2       SELECT substr(event,6,2) lock_type,program,
+  3              h.module, h.action,   object_name,
+  4              SUM(time_waited)/1000 time_ms, COUNT( * ) waits,
+  5              username, sql_text,
+  6              RANK() OVER (ORDER BY SUM(time_waited) DESC)
+                     AS time_rank,
+  7              ROUND(SUM(time_waited) * 100 / SUM(SUM(time_waited))
+  8                  OVER (), 2)             pct_of_time
+  9        FROM  v$active_session_history h
+ 10        JOIN  dba_users u  USING (user_id)
+ 11        LEFT OUTER JOIN dba_objects o
+ 12             ON (o.object_id = h.current_obj#)
+ 13        LEFT OUTER JOIN v$sql s USING (sql_id)
+ 14       WHERE event LIKE 'enq: %'
+ 15       GROUP BY substr(event,6,2) ,program, h.module, h.action,
+ 16           object_name,  sql_text, username)
+ 17  SELECT lock_type,module, username,  object_name, time_ms,
+ 18          pct_of_time, sql_text
+ 19  FROM ash_query
+ 20  WHERE time_rank < 11
+ 21  ORDER BY time_rank;
+LOCK MODULE       USERNAME OBJECT_NAME        TIME_MS PCT_OF_TIME
+---- ------------ -------- ----------- ------------- -----------
+SQL_TEXT
+---------------------------------------------------------------------
+TX   SQL*Plus     OPSG     CUSTOMERS          16,961        48.97
+UPDATE CUSTOMERS SET CUST_VALID = 'I' WHERE CUST_ID = :B1
+KO   SQL*Plus     OPSG                        12,370        35.71
+SELECT /*+ full(s) parallel(s) */ DISTINCT CUST_ID FROM SALES S WHERE
+AMOUNT_SOLD > 10
+KO   SQL*Plus     OPSG     CUSTOMERS           5,306        15.32
+SELECT /*+ full(s) parallel(s) */ DISTINCT CUST_ID FROM SALES S WHERE
+AMOUNT_SOLD > 10
+
+Query III		  
+
+If you are not licensed for the diagnostic pack,  these views are officially off limits, but you can still get a good idea  about the source of lock waits from other views. V$SQL includes a  column APPLICATION_WAIT_TIME, which records the amount of time spent  waiting for events in the Application wait class. This wait class  includes TX, TM, and other locks resulting from normal application DML,  and it’s a good bet that you can find your culprit SQLs by using this  column.
+For instance, the  following query retrieves the top 10 SQLs in terms of  APPLICATION_WAIT_TIME. We can see that the first SQL (a FOR UPDATE  statement), accounts for 57 percent of the application wait time of all  the SQLs currently cached. This statement spends virtually all (99.99  percent) of its elapsed time in application waits, probably waiting for  the requested row lock to become available.
+
+Code View:               Scroll /                 Show All
+
+SQL> WITH sql_app_waits AS
+  2      (SELECT sql_id, SUBSTR(sql_text, 1, 80) sql_text,
+  3              application_wait_time/1000 app_time_ms,
+  4              elapsed_time,
+  5              ROUND(application_wait_time * 100 /
+  6                  elapsed_time, 2) app_time_pct,
+  7              ROUND(application_wait_time * 100 /
+  8                  SUM(application_wait_time) OVER (), 2)
+                        pct_of_app_time,
+  9              RANK() OVER (ORDER BY application_wait_Time DESC)
+                        ranking
+ 10         FROM v$sql
+ 11        WHERE elapsed_time > 0 AND application_wait_time>0)
+ 12  SELECT sql_text, app_time_ms, app_time_pct,
+ 13         pct_of_app_time
+ 14  FROM sql_app_waits
+ 15  WHERE ranking <= 10
+ 16  ORDER BY ranking  ;
+                                                     SQL App    % Tot
+SQL Text                                 AppTime(ms)   Time% App Time
+---------------------------------------- ----------- ------- --------
+SELECT CUST_ID FROM CUSTOMERS WHERE CUST  16,028,591   99.99    57.40
+_ID = :B1 FOR UPDATE
+UPDATE CUSTOMERS SET CUST_VALID = 'I'      3,856,750   99.79    13.81
+WHERE CUST_ID = :B1
+lock table customers in exclusive mode     1,953,773  100.00     7.00
+UPDATE sales    SET channel_id = 2         1,821,471   99.92     6.52
+WHERE cust_id = 100667
+
+Query IV
+
+Another view of lock waits can be obtained by  examining the V$SESSION view. V$SESSION includes the current wait state  of the session, and can identify how long the session has waited and the  identity of any row level locks being sought. The following shows two  sessions waiting on row level locks, both are blocked by session #133:
+
+
+Code View:               Scroll /                 Show All
+
+
+
+SQL> SELECT sid, event, wait_time_micro / 1000 time_ms,
+            blocking_session,
+  2         object_type || ': ' || object_name object, sql_text
+  3    FROM v$session s
+  4    LEFT OUTER JOIN v$sql
+  5         USING (sql_id)
+  6    LEFT OUTER JOIN dba_objects
+  7         ON (object_id = row_wait_obj#)
+  8  WHERE event LIKE 'enq: %';
+Blocked                                              MS Blocking
+    SID Wait event                               Waited      SID
+------- ----------------------------------- ----------- --------
+Object Type: name
+----------------------------------------
+SQL Text
+----------------------------------------------------------------
+    126 enq: TX - row lock contention        142,486.60      133
+TABLE: SALES
+UPDATE sales    SET channel_id = 2  WHERE cust_id = 100667
+    125 enq: TX - row lock contention          1,316.48      133
+TABLE: SALES
+SELECT * FROM SALES WHERE CUST_ID = 100667 FOR UPDATE
+
+Query V
+
+When long-held locks start to create long queues of waiting processes, it can sometimes be useful to build up a lock tree showing the sometimes complex relationships between waiting sessions.  We can build up a simple lock tree, at least for row level locks, by  linking the BLOCKING_SESSION and SID columns in V$SESSION. Here is a  simple lock tree generated in this fashion:
+
+Code View:               Scroll /                 Show All
+
+SQL> WITH sessions AS
+  2     (SELECT /*+materialize*/
+  3             sid, blocking_session, row_wait_obj#, sql_id
+  4        FROM v$session)
+  5  SELECT LPAD(' ', LEVEL ) || sid sid, object_name,
+  6         substr(sql_text,1,40) sql_text
+  7    FROM sessions s
+  8    LEFT OUTER JOIN dba_objects
+  9         ON (object_id = row_wait_obj#)
+ 10    LEFT OUTER JOIN v$sql
+ 11         USING (sql_id)
+ 12   WHERE sid IN (SELECT blocking_session FROM sessions)
+ 13      OR blocking_session IS NOT NULL
+ 14   CONNECT BY PRIOR sid = blocking_session
+ 15   START WITH blocking_session IS NULL;
+SID      OBJECT_NAME      SQL_TEXT
+-------- ---------------  -------------------------------------------
+ 127     SALES
+  117    SALES             UPDATE sales SET quantity_sold=:v_qs WHE
+  118    SALES             UPDATE sales SET quantity_sold=:v_qs WHE
+   130   CUSTOMERS         UPDATE customers SET country_id = :v_cou
+   137   CUSTOMERS         UPDATE customers SET country_id = :v_cou
+
+
+The output shows that  session 127 is at the top of the lock tree. Although sessions 130 and  137 are blocked on session 118, session 118 is in turn blocked on session 127. Persuading session 127 to relinquish its locks—possibly  using ALTER SYSTEM KILL SESSION—will probably resolve the locking issue.
+
+
