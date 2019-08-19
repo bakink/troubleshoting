@@ -48,3 +48,17 @@ where val = 'Y'
 group by reason_not_shared
 order by 2 desc, 3, 1;
 ---
+  
+--https://blog.tuningsql.com/why-is-my-cursor-not-shared/
+  
+ select q'<select *
+ from gv$sql_shared_cursor
+ unpivot ( flag for reason_not_sharing in (>' || listagg(column_name, ', ') within group (order by null) || q'<) )
+ where sql_id = nvl('>' || '&' || q'<v_sql_id.', sql_id)
+   and flag = 'Y'>'x
+ from dba_tab_columns
+ where owner = 'SYS'
+   and table_name = 'V_$SQL_SHARED_CURSOR'
+   and data_type = 'VARCHAR2'
+   and data_length = 1;
+  
