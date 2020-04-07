@@ -1,0 +1,13 @@
+--https://vwvxl1rmh0p.c.updraftclone.com/2011/08/a-tale-of-session-parameter-settings/
+
+select vst.sql_text, swa.sql_id, swa.sid, swa.tablespace
+, swa.operation_type
+, trunc(swa.work_area_size/1024/1024) "PGA MB"
+, trunc(swa.max_mem_used/1024/1024)"Mem MB"
+, trunc(swa.tempseg_size/1024/1024)"Temp MB"
+from v$sql_workarea_active swa, v$session vs, v$sqltext vst
+where swa.sid=vs.sid
+and swa.sql_id=vs.sql_id
+and vs.sql_id=vst.sql_id
+and vst.piece=0
+order by swa.operation_type;
