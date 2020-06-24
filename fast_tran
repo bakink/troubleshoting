@@ -1,0 +1,581 @@
+
+ANBOB™
+        提供专业的ORACLE, MySQL, PostgreSQL数据库产品安装升级、性能调优、故障诊断、远程支持等服务, QQ:85304522 Tel:(+86)134-365-60330
+Bing search
+Google search
+Submit
+首页
+About Me(DBA张维照)
+站内地图
+Exadata Machine
+GoldenGate
+JAVA
+MongoDB
+MySQL
+ORACLE
+ORACLE [C]系列
+PostgreSQL
+SQL Server
+点滴岁月
+精选软件
+系统相关
+老哥杂谈
+Rss Feed
+Mail
+Twitter
+Weibo
+资助站长
+首页 » ORACLE » Tuning “transaction” & TX lock wait event ,speeding up rollback dead transaction
+Tuning “transaction” & TX lock wait event ,speeding up rollback dead transaction
+2014/12/04ORACLE2,326 viewsTuning “transaction” & TX lock wait event ,speeding up rollback dead transaction已关闭评论
+Yesterday I received a warning and a production db instance found many TX lock and wait event “transaction”, I check the TX lock model is 6, so we can make sure is caused by multiple sessions update the same data, and wait event “transaction” is relatively rare, Here the record about my diagnosis method.
+
+# I used TanelPoder‘s scripts package.
+
+SQL> @snapper ash 5 1 all
+Sampling SID all with interval 5 seconds, taking 1 snapshots...
+
+-- Session Snapper v4.11 BETA - by Tanel Poder ( http://blog.tanelpoder.com ) - Enjoy the Most Advanced Oracle Troubleshooting Script on the Planet! :)
+
+
+----------------------------------------------------------------------------------------------------
+Active% | INST | SQL_ID          | SQL_CHILD | EVENT                               | WAIT_CLASS
+----------------------------------------------------------------------------------------------------
+  9900% |    1 | cw9pdvv3zkfn8   | 1         | transaction                         | Other
+  9267% |    1 | 4fwxf7m2a81qc   | 1         | transaction                         | Other
+  5933% |    1 | f88awm2ytk9hz   | 2         | transaction                         | Other
+  4633% |    1 | cw9pdvv3zkfn8   | 1         | enq: TX - row lock contention       | Application
+  4367% |    1 | 4fwxf7m2a81qc   | 1         | enq: TX - row lock contention       | Application
+  2967% |    1 | f88awm2ytk9hz   | 2         | enq: TX - row lock contention       | Application
+  2867% |    1 | 2w35cs2hkbbfm   | 2         | transaction                         | Other
+  1333% |    1 | 2w35cs2hkbbfm   | 2         | enq: TX - row lock contention       | Application
+   467% |    1 | bpxz52kqnzjzq   | 0         | db file scattered read              | User I/O
+   400% |    1 | cw9pdvv3zkfn8   | 0         | transaction                         | Other
+
+
+SQL> @xi 4fwxf7m2a81qc 1
+eXplain the execution plan for sqlid 4fwxf7m2a81qc child 1...
+
+PLAN_TABLE_OUTPUT
+----------------------------------------------------------------------------
+SQL_ID  4fwxf7m2a81qc, child number 1
+-------------------------------------
+UPDATE "PROD_ANBOB_TAB" SET
+"PROD_ANBOB_TAB_A_ID" = :1                  ,
+"PROD_ANBOB_TAB_Z_ID" = :2                  ,      "ROLE_CD" = :3
+                ,      "RELATION_TYPE_CD" = :4                  ,
+"EFF_DATE" = :5                  ,      "EXP_DATE" = :6
+ ,      "STATUS_CD" = :7                  ,      "STATUS_DATE" = :8
+                       WHERE "PROD_ANBOB_TAB_ID" = :9
+
+Plan hash value: 447644083
+
+--------------------------------------------------------------
+| Id  | Operation          | Name                   | E-Rows |
+--------------------------------------------------------------
+|   0 | UPDATE STATEMENT   |                        |        |
+|   1 |  UPDATE            | PROD_ANBOB_TAB    |        |
+|*  2 |   INDEX UNIQUE SCAN| PK_PROD_ANBOB_TAB |      1 |
+--------------------------------------------------------------
+
+Predicate Information (identified by operation id):
+---------------------------------------------------
+
+   2 - access("PROD_ANBOB_TAB_ID"=:9)
+
+SQL> @xi cw9pdvv3zkfn8 1
+eXplain the execution plan for sqlid 4fwxf7m2a81qc child 1...
+
+PLAN_TABLE_OUTPUT
+----------------------------------------------------------------------------
+SQL_ID  cw9pdvv3zkfn8, child number 1
+-------------------------------------
+UPDATE "PROD_ANBOB_TAB" SET
+"PROD_ANBOB_TAB_A_ID" = :1                  ,
+"PROD_ANBOB_TAB_Z_ID" = :2                  ,      "ROLE_CD" = :3
+                ,      "RELATION_TYPE_CD" = :4                  ,
+"EFF_DATE" = :5                  ,      "EXP_DATE" = :6
+ ,      "STATUS_CD" = :7                  ,      "STATUS_DATE" = :8
+                       WHERE "PROD_ANBOB_TAB_ID" = :9
+
+Plan hash value: 447644083
+
+--------------------------------------------------------------
+| Id  | Operation          | Name                   | E-Rows |
+--------------------------------------------------------------
+|   0 | UPDATE STATEMENT   |                        |        |
+|   1 |  UPDATE            | PROD_ANBOB_TAB    |        |
+|*  2 |   INDEX UNIQUE SCAN| PK_PROD_ANBOB_TAB |      1 |
+--------------------------------------------------------------
+Note:
+the top sql is same as update PROD_ANBOB_TAB table.
+
+SQL> @a
+A-Script: Display active sessions...
+
+  COUNT(*) SQL_ID        STATE   EVENT
+---------- ------------- ------- ----------------------------------------------------------------
+       152 cw9pdvv3zkfn8 WAITING transaction
+       138 4fwxf7m2a81qc WAITING transaction
+        91 f88awm2ytk9hz WAITING transaction
+        43 2w35cs2hkbbfm WAITING transaction
+         5 bpxz52kqnzjzq WAITING db file scattered read
+         5 6bcv04k8bwqqx WAITING db file scattered read
+         4 bpxz52kqnzjzq WAITING db file parallel read
+         3 6bcv04k8bwqqx WAITING db file parallel read
+         3 8npvb7gq0hv9n WAITING db file sequential read
+         2 3jxd62rcvgt3s WAITING db file sequential read
+         2 311fvyd1dm8f9 WAITING enq: TX - row lock contention
+...
+sys@HBCRM>@session_rpt
+
+USERNAME        STATUS                    CNT
+--------------- -------- --------------------
+                ACTIVE                     40
+..
+ANBOB   ACTIVE                    439
+ANBOB   INACTIVE                  228
+..
+                         --------------------
+sum                                      1039
+
+                                                               displays active session
+
+   SID SERIAL# USERNAME        wait event                     program                   MACHINE         SQL_ID            BLOCKING_SESSION
+------ ------- --------------- ------------------------------ ------------------------- --------------- ------------- --------------------
+  1498   14000 SYS             DIAG idle wait                 sqlplus@anboba (TNS V1- anboba        0fd4qt85gs6mu
+  3035   17845 CANB        log file sync                  execproc@anboba (TNS V1 anboba        83utvtfqb8ckq
+    42    2217 ANBOB   db file sequential read        JDBC Thin Client          WEEJAR      4fc4s72gwzk1z
+   502    9480 ANBOB   db file sequential read        JDBC Thin Client          WEEJAR      09tb08vnskq8f
+...
+  1431   30205 ANBOB   enq: TX - row lock contention  JDBC Thin Client          WEEJAR      27zcr5rsv5h1n                 1345
+  1438   15289 ANBOB   enq: TX - row lock contention  JDBC Thin Client          WEEJAR      9u051wusmvyyb                 1490
+  1542    9217 ANBOB   enq: TX - row lock contention  JDBC Thin Client          WEEJAR      8x92ggpcg1n05                 1766
+  1583   53380 ANBOB   enq: TX - row lock contention  JDBC Thin Client          WEEJAR      2cm6mhrukt83b                   69
+  1606   22693 ANBOB   enq: TX - row lock contention  JDBC Thin Client          WEEJAR      bbxsfc0vydy0r                 1051
+  1716   17672 ANBOB   enq: TX - row lock contention  JDBC Thin Client          WEEJAR      9u051wusmvyyb                 2081
+  1740   53836 ANBOB   enq: TX - row lock contention  JDBC Thin Client          WEEJAR      8x92ggpcg1n05                  358
+...
+   316   37747 ANBOB   transaction                    JDBC Thin Client          WEEJAR      f88awm2ytk9hz
+   323    3925 ANBOB   transaction                    JDBC Thin Client          WEEJAR      cw9pdvv3zkfn8
+   331   20910 ANBOB   transaction                    JDBC Thin Client          WEEJAR      cw9pdvv3zkfn8
+   333   23474 ANBOB   transaction                    JDBC Thin Client          WEEJAR      cw9pdvv3zkfn8
+   336   21293 ANBOB   transaction                    JDBC Thin Client          WEEJAR      4fwxf7m2a81qc
+   345   57215 ANBOB   transaction                    JDBC Thin Client          WEEJAR      f88awm2ytk9hz
+   358   36644 ANBOB   transaction                    JDBC Thin Client          WEEJAR      f88awm2ytk9hz
+   364   52258 ANBOB   transaction                    JDBC Thin Client          WEEJAR      4fwxf7m2a81qc
+
+SQL> SELECT * FROM v$lock WHERE type='TX' AND lmode > 0;
+
+ADDR             KADDR                   SID TY        ID1        ID2      LMODE    REQUEST      CTIME      BLOCK
+---------------- ---------------- ---------- -- ---------- ---------- ---------- ---------- ---------- ----------
+C000001307D95048 C000001307D95080          7 TX   58589202     536927          6          0      13105          1
+C0000012FF11BCC0 C0000012FF11BCF8         14 TX  135659560      72553          6          0      17897          1
+C0000013034A9E38 C0000013034A9E70         21 TX   41418764    2659285          6          0      10087          2
+C000001305ADDA00 C000001305ADDA38         84 TX  128450588      72005          6          0      18462          1
+C000001306713AD0 C000001306713B08        168 TX  126287877      72124          6          0      14636          2
+C0000013005E06C0 C0000013005E06F8        182 TX   10551334   18158075          6          0      14947          1
+C000001305B58B90 C000001305B58BC8        210 TX   14221324   10189189          6          0      18497          1
+C000001307CE1DE8 C000001307CE1E20        266 TX  142082059      73158          6          0      10223          1
+C000001300635270 C0000013006352A8        287 TX   53805060     721773          6          0       4256          2
+C000001307CFA728 C000001307CFA760        301 TX  145752092      75333          6          0      15757          1
+...
+What is the “transaction” wait event?
+
+Google it, I found Maclean‘blog had a article about it
+”
+Definition: Wait for a blocking transaction to be rolled back. Continue waiting until the transaction has been rolled back.
+
+Wait Time: Wait for up to 1 second for a blocking transaction to be rolled back. Continue waiting until transaction has been
+rolled out.
+
+Parameters:
+P1 – Undo Segment No | Slot No within Undo header.
+P2 – Wrap Sequence [ max value is UB4MAXVAL ].
+P3 – Count
+
+undo seg#
+SELECT * FROM v$rollstat WHERE usn =
+
+slot# This is the slot# within the transaction table that is being used to store a transaction.
+wrap# Wrap or sequence number of the slot. For each new transactionthis number increases.
+count Number of times that Oracle7 has waited on this transaction.
+
+Commentary: Used within kctwit() [ General TX wait routine . ]
+
+Once we have acquired the TX enqueue of the transaction we are waiting for , we must continue waiting until the blocking transaction has been
+
+committed/rolled back. If the transaction has been aborted, then we are waiting for PMON or SMON to complete the rollback (We may be waiting for SMON if a
+rollback segment needs recovery).
+
+This wait is interleaved with “undo segment recovery”, because on each ‘loop’ we call ktucun().
+Whether we see this event depends on the availability of the failed transactions enqueue. This wait may be more prevalent in a 2pc environment.
+
+Dependency: We are dependent on the transaction being rolled out, but we could be waiting for either the local PMON, or a PMON from another instance
+
+[parallel server].
+
+The Undo Segment No will tell us which instance we are waiting for , but at present this will remain an eyeball operation rather than automating it within
+
+ph2.
+
+Validity: N/A
+
+Advise: The waiting basically depends on the size of that transaction that is being rolled back. You may want to check if PMON / SMON
+is doing the rollback for a killed session and if so check Parameter:CLEANUP_ROLLBACK_ENTRIES.
+
+From 7.3 onwards View:X$KTUXE can be used to see the state of a transaction – it shows the transaction table entries in the rollback segment header.
+
+Related: Lock:TX
+Note:34540.1 Enqueue Metrics.
+Bug:960962 Oracle8 OPS issue which can cause OPS deferred transaction recovery to take a long time, hence causing ‘transaction’ waits.
+”
+
+# to diag
+
+SQL>   select usn, state, undoblockstotal "Total", undoblocksdone "Done", undoblockstotal-undoblocksdone "ToDo",
+      decode(cputime,0,'unknown',sysdate+(((undoblockstotal-undoblocksdone) / (undoblocksdone / cputime)) / 86400)) "Estimated time to complete" 
+      from v$fast_start_transactions; 
+
+       USN STATE                 Total       Done       ToDo Estimated time to complet
+---------- ---------------- ---------- ---------- ---------- -------------------------
+       763 RECOVERED              1984       1984          0 03-12月-2014 19:13:55
+      1160 RECOVERED              2016       2016          0 03-12月-2014 19:13:55
+
+SQL> SELECT
+  2      ktuxeusn            usn#     -- 65535 = no-undo transaction
+  3    , ktuxeslt            slot#    -- 65535 = invalid slot#
+  4    , ktuxesqn            seq#
+  5    , ktuxesta            status
+  6    , ktuxecfl            flags
+  7    , ktuxesiz            undo_blks
+  8    , ktuxerdbf           curfile 
+  9    , ktuxerdbb           curblock
+ 10    , ktuxescnw * power(2, 32) + ktuxescnb cscn -- commit/prepare commit SCN
+ 11    , ktuxeuel            
+ 12    -- distributed xacts
+ 13    --, ktuxeddbf           r_rfile
+ 14    --, ktuxeddbb           r_rblock
+ 15    --, ktuxepusn           r_usn#
+ 16    --, ktuxepslt           r_slot#
+ 17    --, ktuxepsqn           r_seq#
+ 18  FROM
+ 19      x$ktuxe
+ 20  WHERE ktuxesta != 'INACTIVE'
+ 21  ORDER BY
+ 22      ktuxeusn
+ 23    , ktuxeslt
+ 24  /
+
+
+      USN#      SLOT#       SEQ# STATUS           FLAGS                     UNDO_BLKS    CURFILE   CURBLOCK       CSCN   KTUXEUEL
+---------- ---------- ---------- ---------------- ------------------------ ---------- ---------- ---------- ---------- ----------
+         4         22   31014027 ACTIVE           NONE                              1        264     967434 1.4027E+13         16
+         5         21   30333340 ACTIVE           NONE                              3          2     817961 1.4027E+13         17
+         7         45   31001476 ACTIVE           NONE                              6        264      61866 1.4027E+13         20
+...
+      1443         31     142002 ACTIVE           NONE                              2          8      29030 1.4027E+13         20
+      1446         10     135047 ACTIVE           NONE                              2        259     400309 1.4027E+13         22
+      1451         22     138059 ACTIVE           NONE                              1          8     613807 1.4027E+13         38
+      1453         23     144618 ACTIVE           NONE                              1         10     604060 1.4027E+13         30
+      1454          1     144624 ACTIVE           NONE                              1          2     919426 1.4027E+13         19
+      1460         11     142710 ACTIVE           NONE                             12          7     516523 1.4027E+13         25
+      1461         34     144127 ACTIVE           NONE                              1        265     134876 1.4027E+13         19
+      1478         44     616678 ACTIVE           NONE                              1         14     776342 1.4027E+13          3
+      1492         28     377606 ACTIVE           NONE                              1         11     546860 1.4027E+13         12
+      1495         28     374646 ACTIVE           NONE                              1          9     842624 1.4027E+13          6
+      1513         35     270415 ACTIVE           NONE                              1          9     623625 1.4027E+13          4
+      1515         19     264799 ACTIVE           NONE                              2         12     952471 1.4027E+13          8
+      1523          4     241934 ACTIVE           DEAD                          41200         11      32135 1.4027E+13          5
+      1524         25     244697 ACTIVE           NONE                              1        262     251684 1.4027E+13          8
+      1525         42     245672 ACTIVE           NONE                              6        263     599843 1.4027E+13         12
+      1526          7     250715 ACTIVE           NONE                              1         12     666181 1.4027E+13         10
+-- have truncated
+
+SQL> select  to_char(scn_to_timestamp(3265*power(2,32)+3527577231),'yyyy-mm-dd hh24:mi:ss') start_date from x$ktuxe where  KTUXECFL ='DEAD';
+
+start_date 
+-------------------
+2014-12-03 14:22:41
+
+# To monitor Dead transaction rollback
+
+SQL> select b.name "UNDO Segment Name", b.inst# "Instance ID", b.status$ STATUS, a.ktuxesiz "UNDO Blocks", a.ktuxeusn, a.ktuxeslt xid_slot, 
+  2  a.ktuxesqn xid_seq, a.ktuxecfl from x$ktuxe a, undo$ b
+  3   where a.ktuxesta = 'ACTIVE' and a.ktuxeusn = b.us#
+  4  and KTUXECFL='DEAD';
+
+UNDO Segment Name              Instance ID     STATUS UNDO Blocks   KTUXEUSN   XID_SLOT    XID_SEQ KTUXECFL
+------------------------------ ----------- ---------- ----------- ---------- ---------- ---------- ------------------------
+_SYSSMU1523$                             2          3       10239       1523          4     241934 DEAD
+
+SQL> /
+
+UNDO Segment Name              Instance ID     STATUS UNDO Blocks   KTUXEUSN   XID_SLOT    XID_SEQ KTUXECFL
+------------------------------ ----------- ---------- ----------- ---------- ---------- ---------- ------------------------
+_SYSSMU1523$                             2          3       10231       1523          4     241934 DEAD
+
+SQL> /
+
+UNDO Segment Name              Instance ID     STATUS UNDO Blocks   KTUXEUSN   XID_SLOT    XID_SEQ KTUXECFL
+------------------------------ ----------- ---------- ----------- ---------- ---------- ---------- ------------------------
+_SYSSMU1523$                             2          3       10228       1523          4     241934 DEAD
+TIP:
+x$ktuxe.KTUXEUSN=v$transaction.XIDUSN
+x$ktuxe.KTUXESLT=v$transaction.XIDSLOT
+x$ktuxe.KTUXESQN=v$transaction.XIDSQN
+
+# we can dump undo to identify the transaction modify obj
+
+SQL>ALTER SYSTEM DUMP UNDO HEADER "_SYSSMU1523$"; 
+or 
+SQL>ALTER SYSTEM DUMP UNDO BLOCK "_SYSSMU1523$" XID 1523 4     241934; 
+
+trace file have objn: xxxx
+SQL> select object_name,owner,object_type from dba_objects where object_id=xxx;
+
+Note:
+I found this object of rollback the dead transaction to update is same as the above update table of sessions waiting “transaction” event.
+
+–Estimate of the duration of a rollback operation , or my previous notes
+
+declare
+l_start number;
+l_end    number;
+begin
+select sum(ktuxesiz) into l_start from x$ktuxe where KTUXECFL ='DEAD';
+  dbms_lock.sleep(60);
+ select sum(ktuxesiz) into l_end from x$ktuxe where KTUXECFL ='DEAD';
+  dbms_output.put_line('time est Day:'|| round(l_end/(l_start -l_end)/60/24,2));
+end;
+ /
+
+
+SQL> show parameter roll
+
+PARAMETER_NAME                                               TYPE        VALUE
+--------------------------------- ----------- ------------------------
+fast_start_parallel_rollback                                 string      FALSE
+rollback_segments                                            string
+transactions_per_rollback_segment                            integer     5
+# Enable fast parallel rollback ,to speeding up rollback of dead transactions.(note: This will increase the OS load)
+
+SQL> alter system set fast_start_parallel_rollback=high;
+# To monitor Dead transaction rollback speed. wait for rollback completed.
+
+select b.name "UNDO Segment Name", b.inst# "Instance ID", b.status$ STATUS, a.ktuxesiz "UNDO Blocks", a.ktuxeusn, a.ktuxeslt xid_slot, 
+  a.ktuxesqn xid_seq, a.ktuxecfl from x$ktuxe a, undo$ b
+   where a.ktuxesta = 'ACTIVE' and a.ktuxeusn = b.us#
+  and KTUXECFL='DEAD';
+# check current wait event
+
+SQL> @a
+A-Script: Display active sessions...
+
+  COUNT(*) SQL_ID        STATE   EVENT
+---------- ------------- ------- ----------------------------------------------------------------
+        58 4fwxf7m2a81qc WAITING transaction
+        45 f88awm2ytk9hz WAITING transaction
+        36 cw9pdvv3zkfn8 WAITING transaction
+        16 8x92ggpcg1n05 WAITING enq: TX - row lock contention
+        13 2w35cs2hkbbfm WAITING transaction
+         6 5bj7w9pqfdu8w ON CPU  On CPU / runqueue
+...
+
+SQL> @a
+A-Script: Display active sessions...
+
+  COUNT(*) SQL_ID        STATE   EVENT
+---------- ------------- ------- ----------------------------------------------------------------
+        15 4fwxf7m2a81qc WAITING enq: TX - row lock contention
+        15 cw9pdvv3zkfn8 WAITING enq: TX - row lock contention
+        10 f88awm2ytk9hz WAITING enq: TX - row lock contention
+         6 5bj7w9pqfdu8w ON CPU  On CPU / runqueue
+         3 4a0mttsu898qv WAITING db file sequential read
+         3 2ps02qtsffqjn WAITING PX Deq Credit: send blkd
+...
+SQL> @a
+A-Script: Display active sessions...
+
+  COUNT(*) SQL_ID        STATE   EVENT
+---------- ------------- ------- ----------------------------------------------------------------
+         4 5bj7w9pqfdu8w ON CPU  On CPU / runqueue
+         4 9mp66qkb11as8 ON CPU  On CPU / runqueue
+         3 9mp66qkb11as8 WAITING direct path read
+         3 2ps02qtsffqjn WAITING PX Deq Credit: send blkd
+         3 93cwbs13dn0vd WAITING db file sequential read
+...
+Summary:
+A person with a oracle IDE client Toad execute a large update transaction, But then transaction abort before commit or rollback. then SMON process to recover Dead transaction, But because the serial rollback takes a long time, so the new session will to wait “tx” and “transaction” to modify the same data. then I set fast_start_parallel_rollback=High (make sure that you have sufficient free resources for it ), to speed-up the rollback that was currently taking place.until wait the dead transaction rollback completed, the wait events not longer show in active session.
+
+Related Posts:
+ORA-600 [k…
+More about…
+More about…
+about para…
+Tuning enq…
+Tuning &#8…
+打赏Performance tuning
+对不起，这篇文章暂时关闭评论。
+上一篇： Troubleshoot ORA-27544,ORA-27300,ORA-27301,ORA-27302,”HPUX-ia64 Error: 23: File table overflow” issue
+
+下一篇： ORA-01135 ORA-01110 check offline tablespace in alert.log
+
+ACE
+最新文章
+Redis学习01之安装Redis6 on Linux 7
+Troubleshooting Oracle 19c RAC db crash with ORA-00600 [kcbbxsv_nwp]
+升级Oracle 19c经验: TTS时ORA-39083和ORA-00942案例
+How to disable DRM? Oracle 10G, 11G, 12C-19C
+Oracle Internal BLOCK CHANGE TRACKING
+升级Oracle 19c经验: TTS 在使用datapump导matadata时EXCLUDE=STATISTICS 不启作用
+Oracle 12c 19c Automatic terminal/kill session feature
+Oracle 11g 12c 18c 19c .. IMPDP Always Creates Indexes with Degree 1
+特殊恢复: Oracle 19c REDO和UNDO 文件被删除
+Troubleshooting ORA-27102: out of memory Linux-x86_64 Error: 12: Cannot allocate memory
+标签云集
+19C automatic feature BACKUP/RECOVERY DataGuard Goldengate mysql Nosql ora-600 ORA-1017 ora-7445 ORACLE11g oracle 12.2 ORACLE 12C ORACLE ADMIN ORACLE ADMIN oracle asm oracle AWR oracle dataguard oracle goldengate oracle internal oracle oem oracle plsql/sql oracle rac ORACLE安全 oracle安装 oracle开发 oracle 异常 oracle教材 oracle 权限管理 oracle物化视图 oracle管理 OS Command OS Command OS Command partition Performance tuning shell sqlserver恢复 Troubleshooting Troubleshooting upgrade 备份与恢复 备份恢复 字符串函数 性能监控
+文章索引
+2020年六月
+2020年五月
+2020年四月
+2020年三月
+2020年二月
+2020年一月
+2019年十二月
+2019年十一月
+2019年十月
+2019年九月
+2019年八月
+2019年七月
+2019年六月
+2019年五月
+2019年四月
+2019年三月
+2019年二月
+2019年一月
+2018年十二月
+2018年十一月
+2018年十月
+2018年九月
+2018年八月
+2018年七月
+2018年六月
+2018年五月
+2018年四月
+2018年三月
+2018年一月
+2017年十二月
+2017年十一月
+2017年十月
+2017年九月
+2017年八月
+2017年七月
+2017年六月
+2017年五月
+2017年四月
+2017年三月
+2017年二月
+2017年一月
+2016年十二月
+2016年十一月
+2016年十月
+2016年九月
+2016年八月
+2016年七月
+2016年六月
+2016年五月
+2016年四月
+2016年三月
+2016年二月
+2016年一月
+2015年十二月
+2015年十一月
+2015年十月
+2015年九月
+2015年八月
+2015年七月
+2015年六月
+2015年五月
+2015年四月
+2015年三月
+2015年二月
+2015年一月
+2014年十二月
+2014年十一月
+2014年十月
+2014年九月
+2014年八月
+2014年七月
+2014年六月
+2014年五月
+2014年四月
+2014年三月
+2014年二月
+2014年一月
+2013年十二月
+2013年十一月
+2013年十月
+2013年九月
+2013年八月
+2013年七月
+2013年六月
+2013年五月
+2013年四月
+2013年三月
+2013年二月
+2013年一月
+2012年十二月
+2012年十一月
+2012年十月
+2012年九月
+2012年八月
+2012年七月
+2012年六月
+2012年五月
+2012年四月
+2012年三月
+2012年二月
+2012年一月
+2011年十二月
+2011年十一月
+2011年十月
+2011年九月
+2011年八月
+2011年七月
+2011年六月
+2011年五月
+2011年四月
+2011年三月
+2011年二月
+2011年一月
+2010年十二月
+2010年十一月
+2009年十二月
+2009年十一月
+MySql Link
+MySQL Performance Blog
+MySQL Performance Test
+ORACLE Link
+ASKTOM
+DBASupport
+Delivery ORA
+Doc ORA
+Gavin Soorma
+Jonathan Lewis
+Oaktable
+orafaq
+orainternals
+PSOUG
+Richard Foote
+Sesebook ebook
+SS64
+Tanel Poder
+Others Link
+WordPress Planet
+管理功能
+登录
+微信公众号
+ANBOB手记
+版权所有© 2009-2029 ANBOB.COM | 联系我 mail:张维照 weibo:zhangweizhao twitter:weejar
+追求卓越，完善自我
