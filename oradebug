@@ -1,0 +1,12 @@
+oradebug setospid 11301
+oradebug event immediate trace name errorstack level 3
+oradebug TRACEFILE_NAME 
+
+
+SQL> oradebug setospid  103536
+Oracle pid: 6362, Unix process pid: 103536, image: oracle@ural
+SQL> oradebug event immediate trace name errorstack level 3
+Statement processed.
+SQL> oradebug TRACEFILE_NAME 
+/u01/app/oracle/diag/rdbms/ykburaltay/KBLIVE01/trace/KBLIVE01_ora_103536.trc
+SQL> exit
