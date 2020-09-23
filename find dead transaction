@@ -1,0 +1,200 @@
+--https://www.anbob.com/archives/6052.html
+
+‘transaction’ event 2 & How to find dead transaction?
+2020/09/18ORACLE9 viewsno comment
+I recorded this about "transaction" event Tuning "transaction" & TX lock wait event, speeding up rollback dead transaction 6 years ago . Today I add some other information. How to find which transaction is dead.
+
+A large number of active sessions are waiting for event'transaction'. For this event, refer to the previous article.
+
+1. First check if undo is sufficient
+
+SQL> select tablespace_name,status,sum(bytes)/1024/1024 mb from DBA_UNDO_EXTENTS group by tablespace_name,status; 
+
+TABLESPACE_NAME                STATUS            MB
+------------------------------ --------- ----------
+UNDOTBS1                       ACTIVE     25055.125
+UNDOTBS1                       EXPIRED     39912.75
+UNDOTBS1                       UNEXPIRED  17884.625
+UNDOTBS2                       ACTIVE           211
+UNDOTBS2                       EXPIRED   33974.6875
+UNDOTBS2                       UNEXPIRED 10753.8125
+2, View instance rollback
+
+SQL> select usn,slt,seq, state,XID, undoblockstotal "Total", undoblocksdone "Done", undoblockstotal-undoblocksdone "ToDo",          
+       decode(cputime,0,'unknown',sysdate+(((undoblockstotal-undoblocksdone) / (undoblocksdone / cputime)) / 86400)) "Estimated time to complete"   
+       from v$fast_start_transactions;  
+
+       USN        SLT        SEQ STATE            XID                                 Total       Done       ToDo Estimated time to
+---------- ---------- ---------- ---------------- ------------------------------ ---------- ---------- ---------- -----------------
+      2084         31   30239922 RECOVERING       0824001F01CD6CB2                  1284125       8181    1275944 20200916 15:49:39
+      1892          6   36949771 RECOVERED        076400060233CF0B                       12         12          0 20200916 11:14:07
+      2062         32   26586849 RECOVERED        080E00200195AEE1                       13         13          0 20200916 11:14:07
+      1854          5   35122956 RECOVERED        073E00050217EF0C                       33         33          0 20200916 11:14:07
+      2064         33   21948112 RECOVERED        08100021014EE6D0                       13         13          0 20200916 11:14:07
+      1877         23   38143450 RECOVERED        07550017024605DA                       14         14          0 unknown
+      2108         28   30836789 RECOVERED        083C001C01D68835                       11         11          0 20200916 11:14:07
+      1792          9   30960200 RECOVERED        0700000901D86A48                       17         17          0 20200916 11:14:07
+3, check dead transactions
+
+SQL> select * from x$ktuxe where ktuxesta!='INACTIVE';
+
+ADDR                   INDX    INST_ID   KTUXEUSN   KTUXESLT   KTUXESQN  KTUXERDBF  KTUXERDBB  KTUXESCNB  KTUXESCNW KTUXESTA         KTUXECFL                   KTUXEUEL  KTUXEDDBF  KTUXEDDBB  KTUXEPUSN  KTUXEPSLT  KTUXEPSQN   KTUXESIZ
+---------------- ---------- ---------- ---------- ---------- ---------- ---------- ---------- ---------- ---------- ---------------- ------------------------ ---------- ---------- ---------- ---------- ---------- ---------- ----------
+...
+9FFFFFFF7F3F3610      69701          1       2048          5   30193948        934     809672 3893691017       3912 ACTIVE           NONE                             14          0          0          0          0          0          1
+9FFFFFFF7F3F3668      70552          1       2073          6   28549131          0          0 3799617294       3912 ACTIVE           NONE                             18          0          0          0          0          0          0
+9FFFFFFF7F3F3CF0      70809          1       2080         25   31394328        934     585592 3893260011       3912 ACTIVE           NONE                             19          0          0          0          0          0         79
+9FFFFFFF7F3F3F00      70951          1       2084         31   30239922        934    2436487 3447352365       3912 ACTIVE           DEAD                           4504          0          0          0          0          0    1269278
+9FFFFFFF7F3F3DF8      71084          1       2088         28   24954357          0          0 3893691006       3912 ACTIVE           NONE                              3          0          0          0          0          0          0
+9FFFFFFF7F3F39D8      71242          1       2093         16   25330033        567      54688 1053850526       3907 ACTIVE           NONE                             16          0          0          0          0          0          7
+9FFFFFFF7F3F3DA0      71389          1       2097         27   30301638          3     769294 3893662854       3912 ACTIVE           NONE                             21          0          0          0          0          0          1
+...
+72 rows selected.
+
+4. Check the start time of the transaction
+
+--scn wrap +base
+SQL> select 3912*power(2,32)+3447352365 from dual;
+
+3912*POWER(2,32)+3447352365
+---------------------------
+             16805359414317
+
+SQL> select scn_to_timestamp(16805359414317) from dual;
+
+SCN_TO_TIMESTAMP(16805359414317)
+---------------------------------------------------------------------------
+16-SEP-20 01.23.15.000000000 AM
+
+5. View transaction session information
+
+SQL> select * from v$active_session_history where xid=hextoraw('0824001F01CD6CB2');
+
+no rows selected
+
+SQL> select min(sample_time),min(sample_time),USER_ID,instance_number,machine,program,sql_id,sql_opname,SQL_EXEC_START,event,WAIT_CLASS from dba_hist_active_sess_history where xid=hextoraw('0824001F01CD6CB2') and sample_time> sysdate-1 group by USER_ID,instance_number,machine,program,sql_id,sql_opname,SQL_EXEC_START,event,WAIT_CLASS;
+
+MIN(SAMPLE_TIME)                    MIN(SAMPLE_TIME)               USER_ID INSTANCE_NUMBER MACHINE    PROGRAM                                 SQL_ID          SQL_OPNAME              SQL_EXEC_START    EVENT
+-------------------------------- -- ----------------------------- -------- --------------- ---------- ----------------------------------- --------------- ----------------------- ----------------- --------------------                            
+16-SEP-20 07.26.14.722 AM           16-SEP-20 07.26.14.722 AM            0               1 qdyyb1     sqlplus@qdyyb1 (TNS V1-V3)                                                                
+16-SEP-20 07.25.53.953 AM           16-SEP-20 07.25.53.953 AM            0               1 qdyyb1     sqlplus@qdyyb1 (TNS V1-V3)                                                                    gc current grant 2-w                                                               
+16-SEP-20 07.25.43.503 AM           16-SEP-20 07.25.43.503 AM            0               1 qdyyb1     sqlplus@qdyyb1 (TNS V1-V3)                                                                    db file sequential r                                                                
+16-SEP-20 01.24.10.954 AM           16-SEP-20 01.24.10.954 AM            0               1 qdyyb1     sqlplus@qdyyb1 (TNS V1-V3)          09mws4h37zp3m   DELETE                  20200916 01:23:15                                                                
+16-SEP-20 03.05.32.630 AM           16-SEP-20 03.05.32.630 AM            0               1 qdyyb1     sqlplus@qdyyb1 (TNS V1-V3)          09mws4h37zp3m   DELETE                  20200916 01:23:15 gc current request                                                                 
+16-SEP-20 01.26.34.755 AM           16-SEP-20 01.26.34.755 AM            0               1 qdyyb1     sqlplus@qdyyb1 (TNS V1-V3)          09mws4h37zp3m   DELETE                  20200916 01:23:15 gc current grant 2-w                                                                
+16-SEP-20 01.23.19.504 AM           16-SEP-20 01.23.19.504 AM            0               1 qdyyb1     sqlplus@qdyyb1 (TNS V1-V3)          09mws4h37zp3m   DELETE                  20200916 01:23:15 db file sequential r                                             
+16-SEP-20 07.03.13.776 AM           16-SEP-20 07.03.13.776 AM            0               1 qdyyb1     sqlplus@qdyyb1 (TNS V1-V3)          09mws4h37zp3m   DELETE                  20200916 01:23:15 gc current grant con
+
+6, Find transaction SQL
+
+SQL> select * from dba_hist_sqltext where sql_id='09mws4h37zp3m';
+                                                                                                             
+      DBID SQL_ID                                                                                            
+---------- ---------------                                                                                   
+SQL_TEXT                                                                                                     
+---------------------------------------------------------------------------
+COMMAND_TYPE                                                                                                 
+------------                                                                                                 
+ 343193180 09mws4h37zp3m                                                                                     
+delete /*+parallel (t 16)*/from ANBOB.BIG_TABLES t where to_char(ENDDATE,'YYYYMMDD')<20200801      
+If you do global hanganalyze, you can see that you are waiting for SMON rolling.
+
+SQL> oradebug -g all hanganalyze 3
+Hang Analysis in /oracle/app/oracle/diag/rdbms/tbcsb/tbcsb2/trace/tbcsb2_diag_24442.trc
+SQL> exit
+
+		   
+Chains most likely to have caused the hang:
+ [a] Chain 1 Signature: 'wait for stopper event to be increased'<='enq: TX - row lock contention'
+     Chain 1 Signature Hash: 0xc0295d85
+ [b] Chain 2 Signature: 'wait for stopper event to be increased'<='enq: TX - row lock contention'
+     Chain 2 Signature Hash: 0xc0295d85
+ [c] Chain 3 Signature: 'wait for stopper event to be increased'<='enq: TX - row lock contention'
+     Chain 3 Signature Hash: 0xc0295d85
+
+===============================================================================
+Non-intersecting chains:
+
+-------------------------------------------------------------------------------
+Chain 1:
+-------------------------------------------------------------------------------
+    Oracle session identified by:
+    {
+                instance: 2 (tbcsb.tbcsb2)
+                   os id: 12342
+              process id: 9840, oracle@qdyyb2
+              session id: 3
+        session serial #: 16363
+    }
+    is waiting for 'enq: TX - row lock contention' with wait info:
+    {
+                      p1: 'name|mode'=0x54580006
+                      p2: 'usn<<16 | slot'=0x824001f
+                      p3: 'sequence'=0x1cd6cb2
+            time in wait: 0.212598 sec
+           timeout after: 2 min 59 sec
+                 wait id: 575369
+                blocking: 0 sessions
+             current sql: DELETE FROM big_tables T WHERE T.CUSTGROUPID = :B3 AND T.CUSTNO = :B2 AND T.REGION = :B1
+             short stack: ksedsts()+544<-ksdxfstk()+48<-ksdxcb()+3216<-sspuser()+688<-<-_pw_wait()+48<-pw_wait()+112<-sskgpwwait()
++432<-skgpwwait()+320<-ksliwat()+3328<-kslwaitctx()+304<-kslwa
+it () + 192 <- $ cold_ktcwit1 () + 8592 <- $ cold_kdddgb () + 18256 <-kdddel () + 688 <-guide () + 96 <-delrow () + 2960 <-qerdlFetch () + 1456 < -delexe () + 2752 <-opiexe () +
+22032 <-opipls () + 4192 <-opiodr () + 2416 <-rpidrus () + 432 <-skgmstack
+()+224<-rpidru()+224<-rpiswu2()+1120<-rpidrv()+2736<-psddr0()+496<-psdnal()+1136<-pevm_EXECC()+1312<-pfrinstr_EXECC()+144<-pfrrun_no_tool()+192<-
+            wait history:
+              * time between current wait and wait #1: 0.000079 sec
+              1.       event: 'transaction'
+                 time waited: 1.011599 sec
+                     wait id: 575368          p1: 'undo seg#|slot#'=0x824001f
+                                              p2: 'wrap#'=0x1cd6cb2
+                                              p3: 'count'=0xbe4
+              * time between wait #1 and #2: 0.000007 sec
+              2.       event: 'DFS lock handle'
+                 time waited: 0.001039 sec
+                     wait id: 575367          p1: 'type|mode'=0x54410005
+                                              p2: 'id1' = 0x3
+                                              p3: 'id2'=0x824
+              * time between wait #2 and #3: 0.000480 sec
+              3.       event: 'enq: TX - row lock contention'
+                 time waited: 0.337039 sec
+                     wait id: 575366          p1: 'name|mode'=0x54580006
+                                              p2: 'usn<<16 | slot'=0x824001f p3: 'sequence'=0x1cd6cb2 } and is blocked by => Oracle session identified by:
+    {
+                instance: 1 (anbob.orcl1)
+                   os id: 15416
+              process id: 36, oracle@anbob1 (SMON)
+              session id: 8137
+        session serial #: 1
+    }
+    which is waiting for 'wait for stopper event to be increased' with wait info:
+    {
+            time in wait: 0.002368 sec
+           timeout after: 0.097632 sec
+                 wait id: 342812575
+                blocking: 26 sessions
+             current sql: 
+             short stack: ksedsts()+544<-ksdxfstk()+48<-ksdxcb()+3216<-sspuser()+688<-<-_poll_sys()+48<-_poll()+224<-ssskgxp_poll()+208<-
+sskgxp_selectex()+1872<-skgxpiwait()+9424<-skgxpwaiti()
++976<-skgxpwait()+416<-ksxpwait()+2880<-$cold_ksliwat()+2288<-kslwaitctx()+304<-kjusuc()+8080<-ksigeti()+2192<-
+$cold_kturUndoSegmentNeedsRecovery()+400<-$cold_kturRecoverActiveTxns()+2816<-$cold_ktprb
+eg()+8576<-ktmmon()+9008<-ktmSmonMain()+496<-ksbrdp()+2736<-opirip()+1296<-opidrv()+1152<-sou2o()+256<-opimai_real()+352<-ssthrdmain()+576<-main(
+            wait history:
+              * time between current wait and wait #1: 0.000501 sec
+              1.       event: 'DFS lock handle'
+                 time waited: 0.000225 sec
+                     wait id: 342812574       p1: 'type|mode'=0x54410005
+                                              p2: 'id1' = 0x3
+                                              p3: 'id2'=0xb74
+              * time between wait #1 and #2: 0.000041 sec
+              2.       event: 'DFS lock handle'
+                 time waited: 0.000281 sec
+                     wait id: 342812573       p1: 'type|mode'=0x54410005
+                                              p2: 'id1' = 0x3
+                                              p3: 'id2' = 0xb73
+              * time between wait #2 and #3: 0.000043 sec
+              3.       event: 'DFS lock handle'
+                 time waited: 0.000534 sec
+                     wait id: 342812572       p1: 'type|mode'=0x54410005
+                                              p2: 'id1' = 0x3
+                                              p3: 'id2' = 0xb72
+    }
